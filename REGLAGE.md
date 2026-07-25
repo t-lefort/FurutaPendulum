@@ -148,7 +148,7 @@ Réglage un gain à la fois, dans cet ordre :
 | 2 | Monte **`K_alpha`** (6 → 8 → 10…) | jusqu'à ce qu'il **réagisse** et tienne quelques secondes ; s'il diverge violemment d'un coup, ton signe est faux (voir note ci-dessous) |
 | 3 | Monte **`K_adot`** (0,3 → 0,6 → 0,9…) | jusqu'à **amortir les oscillations** ; trop haut = tremblement/bruit moteur |
 | 4 | Ajoute un peu de **`K_thd`** (0,1–0,2) | amortit la rotation du bras, lisse la tenue |
-| 5 | Ajoute un peu de **`K_th`** (0,05–0,15) | si le bras **dérive** lentement d'un côté ; ramène-le vers le centre. **Mets 0 si tu as un collecteur tournant.** |
+| 5 | Ajoute un peu de **`K_th`** (0,05–0,15) | si le bras **dérive** lentement d'un côté ; ramène-le vers le centre. Le collecteur tournant autorise la rotation libre, donc `K_th = 0` est possible — mais une petite valeur évite que le bras parte en vadrouille pendant l'équilibre. |
 
 Cible : le pendule tient **immobile** sans trembler ni dériver, et **rejette une
 petite pichenette**. `Sauver EEPROM` dès que c'est bon.

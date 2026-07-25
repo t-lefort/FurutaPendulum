@@ -128,7 +128,7 @@ shared with the control loop's state. When touching either ISR, check for priori
   `QL_THETA_TURNS` is a **terminal state** (reward `QL_R_OUT_RANGE`, no bootstrap on the successor)
   that ends the episode and enters a `resetting` phase which drives the arm back to theta≈0 before
   the next episode starts — training continues rather than halting. This is separate from
-  `TurnsMax`, the hardware safety that faults the whole system.
+  `TurnsMax`, the system-wide runaway guard that faults out of the mode entirely.
   **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
   that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever
   — a local optimum the agent never leaves. Any change to `reward()` must preserve that gate. `step()` does the Q-update
@@ -160,8 +160,14 @@ to the `switch` below it, otherwise Safety checks won't run for it.
   points to be tuned empirically per the README's ordered bring-up steps — don't reorder that
   sequence (unpowered encoder check → motor sign test → recalibrate → balance-only → swing-up →
   Q-learning) since later steps assume earlier ones are already correct.
-- No slip ring on the main arm axis: `THETA_TURNS_MAX` in `config.h` is a software-only limit: set
-  to 0 only if a slip ring is added.
+- **A slip ring is fitted on the main arm axis**, so the pendulum-encoder wiring never winds up and
+  the arm may rotate indefinitely. `THETA_TURNS_MAX` is therefore *not* protecting hardware — it is
+  an optional runaway guard and may be set to 0 (unlimited). Do not reintroduce advice about
+  cable wrap. `K_TH` may likewise be 0 (no need to hold the arm near a home position), though a
+  small value is still useful to keep the arm from wandering during balance.
+- `QL_THETA_TURNS` (Q-learning) is unrelated to the slip ring: it bounds an *episode*, giving a
+  consistent start state and a terminal penalty that discourages the spin exploit. Keep it
+  non-zero even with unlimited mechanical rotation.
 - `DUTY_LIMIT = 0.30` throttles peak current draw for the 15V/3A USB-PD supply; raise only
   gradually while watching for PD-supply cutout.
 - Motor driver is a **DRV8871** (single H-bridge, IN1/IN2 sign-magnitude on pins 22/23, same

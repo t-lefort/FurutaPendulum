@@ -15,6 +15,7 @@ Moteur BLDC gimbal piloté en **FOC** (Field Oriented Control).
 | Encodeur pendule | C38S6G5-1000B | A=2, B=3 (pull-ups 2,2–4,7k vers **3,3 V**) |
 | Écran | GC9A01 240×240 rond | SCL=13, SDA=11, CS=10, DC=9, RST=8 |
 | Encodeur menu | KY-040 | CLK=30, DT=31, SW=32, VCC=**3,3 V** |
+| Collecteur tournant | sur l'axe vertical | passage des signaux de l'encodeur pendule → **rotation illimitée du bras** |
 | Alimentation | USB PD 15 V / 3 A | SimpleFOCMini (VM) + buck 5 V → VIN Teensy |
 
 **Pas de capteur dédié pour la FOC.** La commutation utilise l'**encodeur du
@@ -100,8 +101,11 @@ Résumé :
   | `saturation` | commande saturée en continu trop longtemps | `SAT_TIMEOUT_S` |
 
   En FAULT le moteur est coupé et **le système y reste jusqu'à un clic**.
-- `TurnsMax` protège le **câble de l'encodeur pendule**, qui s'enroule autour de
-  l'axe faute de collecteur tournant. Ne mettre 0 que si un collecteur est ajouté.
+- **Un collecteur tournant équipe l'axe principal** : les signaux de l'encodeur
+  pendule passent par la bague, rien ne s'enroule, et le bras peut donc tourner
+  **indéfiniment** sans risque mécanique. `TurnsMax` peut être mis à **0
+  (illimité)**. Le garder à une valeur élevée reste utile comme garde-fou
+  anti-emballement (arrêt si le contrôle diverge et part en toupie).
 - Fortement recommandé : interrupteur physique sur le 15 V.
 
 ## Réglages (menu « Reglages », persistés en EEPROM)

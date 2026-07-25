@@ -93,7 +93,11 @@ constexpr float    VEL_FILT_ALPHA = 0.20f;          // passe-bas vitesses (0..1,
 // ---------- Sécurité ----------
 constexpr float ALPHA_DOT_MAX   = 30.0f;  // rad/s — coupure si dépassé
 constexpr float THETA_DOT_MAX   = 45.0f;  // rad/s
-constexpr float THETA_TURNS_MAX = 10.0f;   // tours max du bras (0 = illimité, si collecteur tournant)
+// Un COLLECTEUR TOURNANT equipe l'axe : les fils de l'encodeur pendule ne
+// s'enroulent pas, le bras peut tourner indefiniment. Cette limite n'est donc
+// PAS une protection du cablage, juste un garde-fou anti-emballement.
+// 0 = illimite.
+constexpr float THETA_TURNS_MAX = 10.0f;   // tours max du bras
 constexpr float SAT_TIMEOUT_S   = 8.0f;   // coupure si duty saturé en continu trop longtemps
 
 // ---------- Modèle physique (pour le swing-up énergie) ----------
@@ -115,7 +119,7 @@ constexpr float KTHD_SWING = 0.004f;
 // u = -(K_ALPHA*alpha + K_ADOT*alpha_dot + K_TH*theta + K_THD*theta_dot)
 constexpr float K_ALPHA = 9.0f;
 constexpr float K_ADOT  = 0.60f;
-constexpr float K_TH    = 0.20f;   // 0 pour ignorer theta (collecteur tournant)
+constexpr float K_TH    = 0.20f;   // 0 = ignorer theta (rotation libre, cf. collecteur)
 constexpr float K_THD   = 0.42f;
 // Terme INTEGRAL sur theta. Sert a vaincre le frottement statique du train
 // d'engrenages : quand la commande proportionnelle tombe sous le seuil de
@@ -153,17 +157,18 @@ constexpr float QL_LR       = 0.05f;   // learning rate
 // Horizon : gamma^n a 50 Hz. 0.97 -> demi-vie ~0,45 s : l'agent est bien trop
 // myope pour "voir" un swing-up qui dure plusieurs secondes, il prend donc la
 // recompense immediate. 0.99 -> ~1,4 s ; 0.995 -> ~2,8 s.
-constexpr float QL_GAMMA    = 0.99f;
+constexpr float QL_GAMMA    = 0.995f;
 constexpr float QL_EPS0     = 0.30f;
 constexpr float QL_EPS_MIN  = 0.02f;
 constexpr float QL_EPS_DECAY = 0.995f; // par épisode
 constexpr float QL_EPISODE_S = 15.0f;  // durée d'un épisode
 
 // --- Fin d'episode sur sortie de plage du bras ---
-// A distinguer de TurnsMax (securite materielle qui coupe tout) : ici
-// l'episode se TERMINE avec une penalite et un nouvel episode redemarre
-// automatiquement. Permet de garder une vraie limite de tours (protection du
-// cable de l'encodeur pendule) sans interrompre l'entrainement.
+// Sans rapport avec le collecteur tournant (la rotation est libre) : c'est une
+// limite d'EPISODE. Elle donne un etat de depart coherent a chaque episode et
+// une penalite terminale qui decourage la strategie "tourner a fond".
+// A distinguer de TurnsMax, qui coupe tout le mode : ici l'episode se termine
+// et un nouveau redemarre automatiquement, l'entrainement continue.
 constexpr float QL_THETA_TURNS = 2.5f;    // tours max pendant un episode (0 = illimite)
 constexpr float QL_R_OUT_RANGE = -50.0f;  // penalite terminale
 
