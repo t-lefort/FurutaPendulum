@@ -1,0 +1,16 @@
+# Artefacts de compilation Arduino / arduino-cli
+build/
+*.hex
+*.elf
+*.bin
+*.map
+
+# Sorties de l'appareil (Q-tables et logs recuperes sur la microSD)
+*.csv
+q_current.bin
+q_best.bin
+
+# Divers OS / editeurs
+.DS_Store
+Thumbs.db
+.vscode/
