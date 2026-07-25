@@ -274,8 +274,7 @@ void UI::drawAutoTest(uint8_t phase, float dPlus, float dMinus) {
 
 void UI::drawFault(uint8_t code) {
   static const char *NAMES[] = { "aucun", "alpha_dot", "theta_dot",
-                                 "plage bras", "saturation", "stop",
-                                 "reset KO" };
+                                 "plage bras", "saturation", "stop" };
   static constexpr int N_NAMES = sizeof(NAMES) / sizeof(NAMES[0]);
   if (!fullRedraw) return;
   fullRedraw = false;

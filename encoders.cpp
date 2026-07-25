@@ -54,6 +54,16 @@ void Encoders::calibrateBottom() {
   alphaDotF = 0.0f;
 }
 
+// Re-zéro de theta SEUL (offset logiciel, compteur matériel intact -> la FOC
+// n'est pas affectée). Utilisé entre deux épisodes de Q-learning : avec le
+// collecteur tournant, theta absolu n'a pas de sens, et re-zéroter à chaque
+// épisode empêche la dérive de s'accumuler vers TurnsMax.
+// ISR-safe (appelable depuis la boucle de contrôle).
+void Encoders::rezeroArm() {
+  armZero   = readArm();
+  thetaPrev = 0.0f;      // évite un pic de vitesse au tick suivant
+}
+
 // Angle de l'arbre MOTEUR (rad, non borné) pour la commutation FOC.
 // Utilise le compteur BRUT : indépendant de la calibration du bras.
 float Encoders::motorShaftAngle() {

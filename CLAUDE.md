@@ -130,23 +130,19 @@ shared with the control loop's state. When touching either ISR, check for priori
   naive `best=0` start makes an untrained (all-zero) table command full reverse speed forever.
   **The state is `[alpha, alphaDot]` only — `theta` is not observed**, so the policy structurally
   cannot learn to keep the arm centered. Fixing that means adding a theta dimension to the table
-  (and multiplying its size). Instead, arm drift is handled *episodically*: exceeding
-  `QL_THETA_TURNS` is a **terminal state** (reward `QL_R_OUT_RANGE`, no bootstrap on the successor)
-  that ends the episode and enters a two-phase reset sequence (`resetPhase()`), during which the
-  agent is fully inhibited (no action selected, no Q update): **`RS_RETURN`** drives the arm back to
-  theta≈0 with the PD torque, then **`RS_SETTLE`** cuts the motor and waits for the pendulum to hang
-  still (`QL_SETTLE_*`) so every episode starts from the same initial state. Training continues
-  rather than halting. **The reset drives the motor
-  with a direct torque PD on theta (`QL_RESET_*`, applied in `controlTick`), deliberately bypassing
-  `controlTick`)**. **Critical: while `resetPhase() != RS_NONE`, `step()` returns early, so neither
-  `QL_THETA_TURNS` nor `QL_TDOT_MAX` is evaluated — during a reset the only remaining guard is
-  `TurnsMax` at 10 turns.** Anything that goes wrong there therefore runs the arm all the way to
-  that fault. Three things contain it: a hard **speed governor** (`QL_RESET_WMAX`, applied in
-  `controlTick`) that forces braking regardless of the PD output so runaway is impossible;
-  **`QL_RESET_U` ≥ `QL_U_MAX`** so braking is never weaker than the acceleration that caused it;
-  and `QL_RESET_FAIL_S`, after which the reset gives up and raises `FAULT_QL_RESET` instead of
-  pushing indefinitely. The timeout also never resumes training while still out of range. This is separate from
-  `TurnsMax`, the system-wide runaway guard that faults out of the mode entirely.
+  (and multiplying its size). Instead, exceeding `QL_THETA_TURNS` or `QL_TDOT_MAX` is a **terminal
+  state** (reward `QL_R_OUT_RANGE`, no bootstrap on the successor) that ends the episode and enters
+  a **pause** (`isPaused()`): the agent is fully inhibited, the caller cuts the motor (`hardStop`),
+  everything settles (`QL_SETTLE_*`), then theta is **software-re-zeroed** via
+  `Encoders::rezeroArm()` (hardware counter untouched, so FOC commutation is unaffected) and the
+  next episode starts from theta = 0. The per-episode re-zero is what keeps cumulative drift from
+  ever reaching `TurnsMax` (the system-wide runaway guard, which faults the whole mode).
+  **There is deliberately NO active arm-return between episodes.** Earlier revisions drove the arm
+  back to theta=0 with a PD torque; it was a recurring source of runaway-to-`TurnsMax` bugs (sign
+  errors, terminal checks skipped during the reset's early return), and it serves no purpose:
+  theta is unobserved and the slip ring allows any arm position. Do not reintroduce it.
+  Terminal checks are skipped on an episode's first step (`stepsInEpisode == 0` — the theta sample
+  passed in may predate the re-zero).
   **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
   that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever
   — a local optimum the agent never leaves. Any change to `reward()` must preserve that gate. `step()` does the Q-update

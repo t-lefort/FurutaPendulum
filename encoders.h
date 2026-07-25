@@ -13,6 +13,9 @@ namespace Encoders {
   void calibrateBottom();
   // À appeler à chaque tick de la boucle de contrôle (1 kHz)
   void update(PendulumState &s);
+  // Re-zéro de theta seul (offset logiciel ; compteur matériel et FOC intacts).
+  // ISR-safe. Utilisé au début de chaque épisode de Q-learning.
+  void rezeroArm();
   // Angle de l'arbre MOTEUR (rad, non borné), pour la commutation FOC.
   // Basé sur le compteur brut : insensible à calibrateBottom().
   float motorShaftAngle();

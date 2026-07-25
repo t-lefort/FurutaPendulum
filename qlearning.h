@@ -20,16 +20,12 @@ namespace QLearning {
   float step(const PendulumState &s, bool &newEpisode);
   void  endEpisode();                 // fin anticipée (stop utilisateur / faute)
 
-  // Séquence entre deux épisodes. L'agent est inhibé pendant toute la
-  // séquence (aucune action choisie, aucune mise à jour de Q) ; c'est
-  // l'appelant qui pilote le moteur selon la phase :
-  //   RS_RETURN — ramener le bras vers theta = 0 (PD en couple, QL_RESET_*)
-  //   RS_SETTLE — MOTEUR COUPÉ, on attend que le pendule pende immobile
-  enum ResetPhase : uint8_t { RS_NONE = 0, RS_RETURN, RS_SETTLE };
-  ResetPhase resetPhase();
-  // true si le retour du bras n'aboutit pas (QL_RESET_FAIL_S) : l'appelant
-  // doit couper le moteur et lever FAULT_QL_RESET plutôt que d'insister.
-  bool resetFailed();
+  // true pendant la pause entre deux épisodes. L'agent est inhibé (aucune
+  // action, aucune mise à jour de Q) et l'appelant doit COUPER le moteur :
+  // on attend simplement que pendule et bras s'immobilisent. Aucun couple
+  // n'est piloté, donc aucun emballement possible. Au sortir de la pause,
+  // theta est re-zéroté (Encoders::rezeroArm) : chaque épisode part de 0.
+  bool isPaused();
 
   const Stats& stats();
 

@@ -102,7 +102,6 @@ Résumé :
   | `theta_dot` | survitesse bras | `TdotMax` |
   | `plage bras` | bras au-delà de ±N tours | `TurnsMax` (0 = illimité) |
   | `saturation` | commande saturée en continu trop longtemps | `SAT_TIMEOUT_S` |
-  | `reset KO` | le retour du bras entre 2 épisodes n'aboutit pas | `QL_RESET_*` |
 
   En FAULT le moteur est coupé et **le système y reste jusqu'à un clic**.
 - **Un collecteur tournant équipe l'axe principal** : les signaux de l'encodeur
@@ -154,7 +153,8 @@ Trop fort → le bras « chasse » (colle / décolle / dépasse) : réduire.
 - `safety.*` — survitesses, plage bras, saturation
 - `control_classic.*` — swing-up énergie + retour d'état, commutation auto
 - `qlearning.*` — Q-table 49×31×7 (float, DMAMEM), ε-greedy, épisodes ; entre
-  deux épisodes : retour du bras à θ ≈ 0, puis moteur coupé le temps que le
-  pendule pende immobile (état initial identique à chaque épisode)
+  deux épisodes : **moteur coupé** le temps que tout s'immobilise, puis θ
+  re-zéroté (offset logiciel) — pas de retour actif du bras : θ n'est pas
+  observé par l'agent et le collecteur tournant autorise toute position
 - `storage.*` — Q-table binaire + logs CSV sur microSD (optionnelle)
 - `ui.*` — écran GC9A01 + encodeur KY-040 (menu, écrans live, fautes, réglages)

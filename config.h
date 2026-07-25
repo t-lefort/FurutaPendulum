@@ -176,45 +176,27 @@ constexpr float QL_EPISODE_S = 15.0f;  // durée d'un épisode
 // une penalite terminale qui decourage la strategie "tourner a fond".
 // A distinguer de TurnsMax, qui coupe tout le mode : ici l'episode se termine
 // et un nouveau redemarre automatiquement, l'entrainement continue.
+// Mesures RELATIVEMENT a la position du bras au debut de l'episode : ce qui
+// compte est de ne pas laisser un episode partir en vrille, pas la position
+// absolue (theta n'est pas observe, et le collecteur autorise tout).
 constexpr float QL_THETA_TURNS = 2.5f;    // tours max pendant un episode (0 = illimite)
-// Termine aussi l'episode si le bras s'emballe : plus tot on coupe, moins il y
-// a d'elan a freiner au retour. Donne aussi a l'agent un signal clair que
-// prendre de la vitesse est mauvais.
-constexpr float QL_TDOT_MAX    = 15.0f;   // rad/s (0 = desactive)
+// Termine aussi l'episode si le bras s'emballe. Le moteur etant coupe ensuite,
+// le bras finit sur son elan : garder ce seuil BAS limite la distance parcourue
+// en roue libre avant l'arret.
+constexpr float QL_TDOT_MAX    = 8.0f;    // rad/s (0 = desactive)
 constexpr float QL_R_OUT_RANGE = -50.0f;  // penalite terminale
 
-// --- Remise en place automatique entre deux episodes ---
-// Retour du bras pilote en COUPLE (PD sur theta), meme structure que les
-// termes theta de l'equilibre. Un retour qui echoue laisse theta grandir
-// d'episode en episode jusqu'a la faute "plage bras".
-constexpr float QL_RESET_KTH     = 0.15f;  // couple par rad d'ecart
-constexpr float QL_RESET_KTHD    = 0.30f;  // amortissement (par rad/s)
-// /!\ DOIT etre >= QL_U_MAX : le retour doit pouvoir freiner un bras lance par
-// l'agent au couple maxi. Plus faible, le freinage dure plus longtemps que
-// l'acceleration, le delai expire en plein freinage et theta monte en escalier
-// d'un episode a l'autre jusqu'a la faute "plage bras".
-constexpr float QL_RESET_U       = 0.70f;  // couple max pendant le retour
-// GOUVERNEUR DE VITESSE, garde-fou principal du retour. Pendant les phases de
-// reset, step() sort par un return anticipe : ni QL_THETA_TURNS ni QL_TDOT_MAX
-// ne sont evalues, et le SEUL garde-fou restant est TurnsMax (10 tours). Si
-// quoi que ce soit tourne mal pendant le retour (signe, saturation, elan), le
-// bras file donc jusqu'a 10 tours. Au-dela de cette vitesse on FREINE, quelle
-// que soit la sortie du PD : l'emballement devient impossible.
-constexpr float QL_RESET_WMAX    = 6.0f;   // rad/s max pendant le retour
-constexpr float QL_RESET_TOL_RAD = 0.25f;  // tolerance d'arrivee
-constexpr float QL_RESET_MAX_S   = 15.0f;  // delai avant d'accepter un retour partiel
-// Au-dela, on considere que le retour a echoue : on coupe et on affiche la
-// faute "reset KO" plutot que de laisser le bras derailler en silence.
-constexpr float QL_RESET_FAIL_S  = 25.0f;
-
-// Phase 2 du reset : une fois le bras rentre, MOTEUR COUPE et on attend que le
-// pendule pende immobile. Sans ca un episode peut demarrer pendule n'importe
-// ou et encore en mouvement -> etats initiaux incoherents d'un episode a
-// l'autre, ce qui brouille l'apprentissage.
-constexpr float QL_SETTLE_RAD       = 0.35f; // rad autour de +/-pi = "en bas"
-constexpr float QL_SETTLE_ADOT      = 0.60f; // rad/s = "immobile"
-constexpr float QL_SETTLE_MAX_S     = 8.0f;  // delai max d'attente
-constexpr float QL_SETTLE_DRIFT_RAD = 1.5f;  // au-dela, on re-ramene le bras
+// --- Pause entre deux episodes : MOTEUR COUPE, on attend le repos ---
+// On ne ramene PAS le bras a theta = 0 : theta n'est pas dans l'etat du RL
+// (l'etat est [alpha, alpha_dot]), donc sa position n'apporte aucune coherence
+// a l'apprentissage, et le collecteur tournant l'autorise n'importe ou.
+// Aucun couple n'est pilote pendant la pause -> aucune dependance au signe et
+// aucun emballement possible. On attend juste que tout s'immobilise, pour que
+// chaque episode reparte du meme etat : pendule en bas, au repos.
+constexpr float QL_SETTLE_RAD   = 0.35f;  // rad autour de +/-pi = "pendule en bas"
+constexpr float QL_SETTLE_ADOT  = 0.60f;  // rad/s = "pendule immobile"
+constexpr float QL_SETTLE_TDOT  = 1.00f;  // rad/s = "bras immobile"
+constexpr float QL_SETTLE_MAX_S = 10.0f;  // delai max d'attente
 
 // ---------- Machine à états ----------
 enum SysState : uint8_t {
@@ -250,8 +232,7 @@ enum FaultCode : uint8_t {
   FAULT_THETA_DOT,
   FAULT_THETA_RANGE,
   FAULT_SATURATION,
-  FAULT_USER_STOP,
-  FAULT_QL_RESET      // le retour du bras entre 2 episodes n'aboutit pas
+  FAULT_USER_STOP
 };
 
 // État partagé boucle de contrôle <-> reste du programme
