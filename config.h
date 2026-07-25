@@ -150,11 +150,28 @@ constexpr int   QL_N_ACT    = 7;
 constexpr float QL_ADOT_MAX = 20.0f;   // rad/s, plage de discrétisation
 constexpr float QL_W_MAX    = 12.0f;   // rad/s, vitesse bras max commandée
 constexpr float QL_LR       = 0.05f;   // learning rate
-constexpr float QL_GAMMA    = 0.97f;
+// Horizon : gamma^n a 50 Hz. 0.97 -> demi-vie ~0,45 s : l'agent est bien trop
+// myope pour "voir" un swing-up qui dure plusieurs secondes, il prend donc la
+// recompense immediate. 0.99 -> ~1,4 s ; 0.995 -> ~2,8 s.
+constexpr float QL_GAMMA    = 0.99f;
 constexpr float QL_EPS0     = 0.30f;
 constexpr float QL_EPS_MIN  = 0.02f;
 constexpr float QL_EPS_DECAY = 0.995f; // par épisode
 constexpr float QL_EPISODE_S = 15.0f;  // durée d'un épisode
+
+// --- Fin d'episode sur sortie de plage du bras ---
+// A distinguer de TurnsMax (securite materielle qui coupe tout) : ici
+// l'episode se TERMINE avec une penalite et un nouvel episode redemarre
+// automatiquement. Permet de garder une vraie limite de tours (protection du
+// cable de l'encodeur pendule) sans interrompre l'entrainement.
+constexpr float QL_THETA_TURNS = 2.5f;    // tours max pendant un episode (0 = illimite)
+constexpr float QL_R_OUT_RANGE = -50.0f;  // penalite terminale
+
+// --- Remise en place automatique entre deux episodes ---
+constexpr float QL_RESET_KP      = 2.0f;   // (rad/s) commandes par rad d'ecart
+constexpr float QL_RESET_W       = 5.0f;   // rad/s max pendant le retour
+constexpr float QL_RESET_TOL_RAD = 0.15f;  // tolerance d'arrivee
+constexpr float QL_RESET_MAX_S   = 6.0f;   // securite anti-blocage
 
 // ---------- Machine à états ----------
 enum SysState : uint8_t {

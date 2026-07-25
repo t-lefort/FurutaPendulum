@@ -8,6 +8,10 @@ static bool  greedyMode = false;
 static int   prevStateIdx = -1;
 static int   prevAction   = 0;
 static float stepsInEpisode = 0;
+// Phase de remise en place : entre deux episodes on ramene le bras vers
+// theta = 0 avant de relancer, pour repartir d'un etat coherent.
+static bool  resetting  = false;
+static float resetTime  = 0.0f;
 static const float ACTION_W[QL_N_ACT] = {
   -QL_W_MAX, -QL_W_MAX * 0.66f, -QL_W_MAX * 0.33f, 0.0f,
    QL_W_MAX * 0.33f,  QL_W_MAX * 0.66f,  QL_W_MAX };
@@ -46,10 +50,16 @@ static inline float maxQ(int sIdx) {
 static float reward(const PendulumState &s, int action) {
   float r = 2.0f * cosf(s.alpha)
           - 0.02f  * fabsf(s.alphaDot)
-          - 0.005f * fabsf(s.thetaDot)
+          - 0.05f  * fabsf(s.thetaDot)     // etait 0.005 : trop faible pour
+                                           // decourager la rotation continue
           - 0.02f  * fabsf(ACTION_W[action]) / QL_W_MAX;
-  if (fabsf(s.alpha) < radians(10)) r += 5.0f;
-  if (fabsf(s.alpha) < radians(5) && fabsf(s.alphaDot) < 1.0f) r += 20.0f;
+  // Les bonus "pendule en haut" exigent desormais un bras LENT. Sans cette
+  // condition, un bras qui tourne a fond maintient le pendule releve par
+  // effet centrifuge et touche les bonus sans jamais equilibrer : c'est un
+  // optimum local tres attractif dont l'agent ne ressort plus.
+  if (fabsf(s.alpha) < radians(10) && fabsf(s.thetaDot) < 3.0f) r += 5.0f;
+  if (fabsf(s.alpha) < radians(5) && fabsf(s.alphaDot) < 1.0f
+                                  && fabsf(s.thetaDot) < 2.0f) r += 20.0f;
   return r;
 }
 
@@ -69,19 +79,60 @@ void QLearning::startSession(bool greedy) {
   prevStateIdx = -1;
   stepsInEpisode = 0;
   st.episodeReward = 0.0f;
+  resetting = false;
+  resetTime = 0.0f;
 }
+
+static inline void beginReset() { resetting = true; resetTime = 0.0f; }
 
 float QLearning::step(const PendulumState &s, bool &newEpisode) {
   newEpisode = false;
+
+  // ---- Remise en place entre deux episodes ----
+  // Ramene le bras vers theta = 0 avant de relancer : sans ca, l'episode
+  // suivant repartirait bras deja en butee et se terminerait aussitot.
+  if (resetting) {
+    resetTime += RL_DT;
+    const bool home = fabsf(s.theta)    < QL_RESET_TOL_RAD &&
+                      fabsf(s.thetaDot) < 1.0f &&
+                      fabsf(s.alphaDot) < 5.0f;
+    if (home || resetTime > QL_RESET_MAX_S) {
+      resetting     = false;
+      prevStateIdx  = -1;      // pas de transition a cheval sur le reset
+      stepsInEpisode = 0;
+      st.episodeReward = 0.0f;
+    } else {
+      const float w = constrain(-QL_RESET_KP * s.theta, -QL_RESET_W, QL_RESET_W);
+      st.wCommand = w;
+      st.lastAction = 0;
+      return w;
+    }
+  }
+
   const int sIdx = stateIndex(s);
+  // Sortie de plage = etat TERMINAL de l'episode (et non coupure du mode).
+  const bool outOfRange = (QL_THETA_TURNS > 0.0f &&
+                           fabsf(s.theta) > QL_THETA_TURNS * (float)TWO_PI);
 
   // Mise à jour Q(s,a) avec la transition précédente
   if (!greedyMode && prevStateIdx >= 0) {
-    const float r = reward(s, prevAction);
+    float r = reward(s, prevAction);
+    if (outOfRange) r += QL_R_OUT_RANGE;
     st.lastStepReward = r;
     st.episodeReward += r;
     float &q = Q[prevStateIdx + prevAction];
-    q += QL_LR * (r + QL_GAMMA * maxQ(sIdx) - q);
+    // Sur un etat terminal on ne bootstrappe PAS sur l'etat suivant : la
+    // penalite doit rester attachee a l'action qui y a mene.
+    const float target = outOfRange ? r : (r + QL_GAMMA * maxQ(sIdx));
+    q += QL_LR * (target - q);
+  }
+
+  if (outOfRange) {
+    endEpisode();
+    newEpisode = true;
+    beginReset();
+    st.wCommand = 0.0f;
+    return 0.0f;
   }
 
   // Choix de l'action (epsilon-greedy)
@@ -101,6 +152,7 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
   if (stepsInEpisode * RL_DT >= QL_EPISODE_S) {
     endEpisode();
     newEpisode = true;
+    beginReset();       // ramene le bras avant l'episode suivant
   }
   return ACTION_W[a];
 }

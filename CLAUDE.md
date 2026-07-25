@@ -123,8 +123,15 @@ shared with the control loop's state. When touching either ISR, check for priori
   ties toward `ACT_NEUTRAL`** (the 0 rad/s action), not index 0 — index 0 is `-QL_W_MAX`, so a
   naive `best=0` start makes an untrained (all-zero) table command full reverse speed forever.
   **The state is `[alpha, alphaDot]` only — `theta` is not observed**, so the policy structurally
-  cannot learn to keep the arm centered; expect arm drift and eventual `FAULT_THETA_RANGE` during
-  training. Fixing that means adding a theta dimension to the table (and multiplying its size). `step()` does the Q-update
+  cannot learn to keep the arm centered. Fixing that means adding a theta dimension to the table
+  (and multiplying its size). Instead, arm drift is handled *episodically*: exceeding
+  `QL_THETA_TURNS` is a **terminal state** (reward `QL_R_OUT_RANGE`, no bootstrap on the successor)
+  that ends the episode and enters a `resetting` phase which drives the arm back to theta≈0 before
+  the next episode starts — training continues rather than halting. This is separate from
+  `TurnsMax`, the hardware safety that faults the whole system.
+  **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
+  that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever
+  — a local optimum the agent never leaves. Any change to `reward()` must preserve that gate. `step()` does the Q-update
   for the *previous* transition before selecting the next action (standard online tabular
   Q-learning), and is a no-op update in greedy mode.
 - `storage.*` — microSD (`BUILTIN_SDCARD`) for binary Q-table snapshots (`/q_current.bin`,
