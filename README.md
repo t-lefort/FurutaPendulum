@@ -86,7 +86,9 @@ Résumé :
 5. **Classic** : si le pendule s'amortit au lieu de monter, **inverser le signe
    de `Ke_swing`**.
 6. **QL → Entrainer** : épisodes de 15 s, logs CSV dans `/logs/`, Q-table
-   auto-sauvée (`/q_current.bin`, `/q_best.bin`).
+   auto-sauvée (`/q_current.bin`, `/q_best.bin`). Les 7 actions sont des
+   **couples** appliqués directement au moteur (±`QL_U_MAX`), sans boucle de
+   vitesse intermédiaire à régler.
 
 ## Sécurité
 
@@ -121,7 +123,6 @@ premier boot ou après « Defauts ») ; la valeur appliquée est `Settings::cfg`
 | `K_alpha`, `K_adot`, `K_th`, `K_thd` | équilibre (retour d'état) |
 | `K_thi` | intégrale sur θ : débloque le bras coincé par le frottement |
 | `Ke_swing`, `Kthd_sw` | swing-up par énergie |
-| `Kp_vel`, `Ki_vel` | boucle de vitesse (Q-learning uniquement) |
 | `AdotMax`, `TdotMax`, `TurnsMax` | seuils de sécurité |
 
 `K_th` ramène le bras vers **θ = 0** (sa position au démarrage / à la dernière

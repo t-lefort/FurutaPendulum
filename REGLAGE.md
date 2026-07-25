@@ -129,9 +129,9 @@ Test : en Balance seul, si le pendule tombe alors que les gains semblent bons et
 que le moteur « répond en retard » → augmente `DutySlew`. Si ça ramène le
 brownout, tu as ton plafond → règle le problème d'alim plutôt que de brider ici.
 
-### `Kp_vel` / `Ki_vel` — boucle de vitesse (sert au Q-learning, pas au Classic)
-À ignorer pour le mode Classic. (Réglage : en QL greedy table vierge, action 0 =
-bras immobile ; actions ±3 ≈ ±12 rad/s sans osciller.)
+### Boucle de vitesse — supprimée
+Il n'y a plus de PI de vitesse : les actions du Q-learning sont des **couples**
+appliqués directement au moteur (`QL_U_MAX`). Rien à régler ici.
 
 ---
 
@@ -218,9 +218,8 @@ Loi : `u = Ke_swing·(E − E_top)·α̇·cos(α) − Kthd_sw·θ̇`.
 | `DutyLim`, `DutySlew` | moteur bas niveau | 3, 6 |
 | `K_alpha`, `K_adot`, `K_th`, `K_thd` | équilibre | 4 |
 | `Ke_swing`, `Kthd_sw` | swing-up | 5 |
-| `Kp_vel`, `Ki_vel` | boucle vitesse (Q-learning) | — |
 | `AdotMax`, `TdotMax`, `TurnsMax` | sécurités | 0, 5 |
 
 **En dur dans `config.h` (recompilation) :** `BAL_ENTER_RAD`, `BAL_ENTER_ADOT`,
-`BAL_EXIT_RAD` (seuils de bascule), `VEL_I_MAX`, `SAT_TIMEOUT_S`, dimensions et
+`BAL_EXIT_RAD` (seuils de bascule), `SAT_TIMEOUT_S`, dimensions et
 hyperparamètres du Q-learning.

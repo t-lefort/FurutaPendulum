@@ -12,9 +12,10 @@ static float stepsInEpisode = 0;
 // theta = 0 avant de relancer, pour repartir d'un etat coherent.
 static bool  resetting  = false;
 static float resetTime  = 0.0f;
-static const float ACTION_W[QL_N_ACT] = {
-  -QL_W_MAX, -QL_W_MAX * 0.66f, -QL_W_MAX * 0.33f, 0.0f,
-   QL_W_MAX * 0.33f,  QL_W_MAX * 0.66f,  QL_W_MAX };
+// Actions = couples normalises appliques DIRECTEMENT au moteur.
+static const float ACTION_U[QL_N_ACT] = {
+  -QL_U_MAX, -QL_U_MAX * 0.66f, -QL_U_MAX * 0.33f, 0.0f,
+   QL_U_MAX * 0.33f,  QL_U_MAX * 0.66f,  QL_U_MAX };
 
 static inline int binAlpha(float a) {
   // alpha dans [-pi, pi] -> [0, N-1]
@@ -30,10 +31,10 @@ static inline int stateIndex(const PendulumState &s) {
   return (binAlpha(s.alpha) * QL_N_ADOT + binAdot(s.alphaDot)) * QL_N_ACT;
 }
 // En cas d'EGALITE (typiquement une table vierge, tout a zero), on doit
-// retomber sur l'action NEUTRE (0 rad/s) et non sur l'indice 0, qui vaut
-// -QL_W_MAX : sinon un agent non entraine commande la vitesse maxi dans un
+// retomber sur l'action NEUTRE (couple nul) et non sur l'indice 0, qui vaut
+// -QL_U_MAX : sinon un agent non entraine applique le couple maxi dans un
 // sens en permanence et le bras part en toupie jusqu'a la faute "plage bras".
-static constexpr int ACT_NEUTRAL = QL_N_ACT / 2;   // ACTION_W[3] = 0 rad/s
+static constexpr int ACT_NEUTRAL = QL_N_ACT / 2;   // ACTION_U[3] = couple nul
 
 static inline int bestAction(int sIdx) {
   int best = ACT_NEUTRAL; float bv = Q[sIdx + ACT_NEUTRAL];
@@ -52,7 +53,7 @@ static float reward(const PendulumState &s, int action) {
           - 0.02f  * fabsf(s.alphaDot)
           - 0.05f  * fabsf(s.thetaDot)     // etait 0.005 : trop faible pour
                                            // decourager la rotation continue
-          - 0.02f  * fabsf(ACTION_W[action]) / QL_W_MAX;
+          - 0.02f  * fabsf(ACTION_U[action]) / QL_U_MAX;
   // Les bonus "pendule en haut" exigent desormais un bras LENT. Sans cette
   // condition, un bras qui tourne a fond maintient le pendule releve par
   // effet centrifuge et touche les bonus sans jamais equilibrer : c'est un
@@ -105,7 +106,7 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
       // Le retour effectif du bras est applique en COUPLE par l'appelant
       // (voir isResetting() dans FurutaPendulum.ino) : on ne renvoie donc
       // aucune consigne de vitesse ici.
-      st.wCommand = 0.0f;
+      st.uCommand = 0.0f;
       st.lastAction = 0;
       return 0.0f;
     }
@@ -136,7 +137,7 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
     if (stepsInEpisode > 0.0f) { endEpisode(); newEpisode = true; }
     else                       { prevStateIdx = -1; }
     beginReset();
-    st.wCommand = 0.0f;
+    st.uCommand = 0.0f;
     return 0.0f;
   }
 
@@ -150,7 +151,7 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
   prevStateIdx = sIdx;
   prevAction   = a;
   st.lastAction = (int8_t)(a - ACT_NEUTRAL);
-  st.wCommand   = ACTION_W[a];
+  st.uCommand   = ACTION_U[a];
 
   // Gestion de l'épisode
   stepsInEpisode += 1.0f;
@@ -159,7 +160,7 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
     newEpisode = true;
     beginReset();       // ramene le bras avant l'episode suivant
   }
-  return ACTION_W[a];
+  return ACTION_U[a];
 }
 
 void QLearning::endEpisode() {

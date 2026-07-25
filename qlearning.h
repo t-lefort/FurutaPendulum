@@ -8,13 +8,14 @@ namespace QLearning {
     float    episodeReward;
     float    bestReward;
     int8_t   lastAction;     // -3..+3
-    float    wCommand;       // rad/s, consigne vitesse bras courante
+    float    uCommand;       // couple normalisé [-1,1] appliqué au moteur
     float    lastStepReward;
   };
 
   void begin();                       // init table à zéro
   void startSession(bool greedy);     // greedy=true : exploitation pure, pas d'update
-  // Un pas RL (à appeler à 50 Hz). Retourne la consigne de vitesse bras (rad/s).
+  // Un pas RL (à appeler à 50 Hz). Retourne le COUPLE NORMALISÉ [-1,1] à
+  // appliquer directement au moteur (aucune boucle de vitesse intermédiaire).
   // newEpisode est mis à true quand un épisode vient de se terminer.
   float step(const PendulumState &s, bool &newEpisode);
   void  endEpisode();                 // fin anticipée (stop utilisateur / faute)

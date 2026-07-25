@@ -1,5 +1,5 @@
 // ============================================================
-//  Pendule de Furuta — Teensy 4.1 + RS-550 + DRV8871 + GC9A01
+//  Pendule de Furuta — Teensy 4.1 + BLDC gimbal (FOC) + SimpleFOCMini + GC9A01
 //  Modes : Classic (swing-up + équilibre) et Q-learning embarqué
 //
 //  Boucle de contrôle : 1 kHz (IntervalTimer)
@@ -31,7 +31,7 @@ static PendulumState      snapshot;         // copie pour loop
 
 // Q-learning
 static uint32_t rlCounter = 0;
-static float    rlWCmd = 0.0f;
+static float    rlUCmd = 0.0f;
 static volatile bool qlSaveRequest = false;
 
 // Jog manuel
@@ -80,20 +80,17 @@ static void controlTick() {
       if (++rlCounter >= RL_DIVIDER) {
         rlCounter = 0;
         bool epEnd = false;
-        rlWCmd = QLearning::step(isrState, epEnd);
+        rlUCmd = QLearning::step(isrState, epEnd);
         if (epEnd) qlSaveRequest = true;
       }
       if (QLearning::isResetting()) {
-        // Retour du bras entre deux épisodes : PD sur theta en COUPLE direct.
-        // On court-circuite volontairement la boucle de vitesse (KP_VEL/KI_VEL
-        // n'est pas réglée) : si le retour échoue, theta grandit d'épisode en
-        // épisode jusqu'à la faute "plage bras".
+        // Retour du bras entre deux épisodes : PD sur theta, en couple.
         Motor::setDuty(constrain(-QL_RESET_KTH  * isrState.theta
                                  - QL_RESET_KTHD * isrState.thetaDot,
                                  -QL_RESET_U, QL_RESET_U));
-        Motor::resetVelocityPid();   // repart sans windup à la fin du reset
       } else {
-        Motor::velocityStep(rlWCmd, isrState.thetaDot);
+        // L'action du RL EST le couple : aucune boucle intermédiaire.
+        Motor::setDuty(rlUCmd);
       }
       break;
 
@@ -157,10 +154,9 @@ static void controlTick() {
 static void enterState(SysState next) {
   noInterrupts();
   Motor::hardStop();
-  Motor::resetVelocityPid();
   Safety::reset();
   rlCounter = 0;
-  rlWCmd = 0.0f;
+  rlUCmd = 0.0f;
   jogDuty = 0.0f;
   olVel   = 0.0f;
   atPhase = 0; atTicks = 0;

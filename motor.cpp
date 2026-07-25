@@ -35,7 +35,6 @@ static volatile float appliedNorm = 0.0f;  // couple normalise [-1, 1]
 static volatile bool  motorOn     = false;
 static bool           driverOk    = false; // etage de puissance pret
 static bool           focOk       = false; // + alignement capteur reussi
-static float          velInt      = 0.0f;  // integrateur PI vitesse (ISR only)
 
 // Open-loop : ne depend QUE de driverOk (pas du capteur).
 static volatile bool  openLoop    = false;
@@ -81,17 +80,7 @@ void Motor::setDuty(float u) {
   motorOn = true;
 }
 
-void Motor::velocityStep(float wTarget, float wMeasured) {
-  const float err = wTarget - wMeasured;
-  velInt += cfg.kiVel * err * CTRL_DT;
-  velInt = constrain(velInt, -VEL_I_MAX, VEL_I_MAX);
-  setDuty(cfg.kpVel * err + velInt);
-}
-
-void Motor::resetVelocityPid() { velInt = 0.0f; }
-
 void Motor::hardStop() {
-  velInt      = 0.0f;
   appliedNorm = 0.0f;
   openLoopVel = 0.0f;
   motorOn     = false;      // spin() appliquera un couple nul (roue libre)

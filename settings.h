@@ -21,8 +21,6 @@ namespace Settings {
     float kAlpha, kAdot, kTh, kThd, kThi;
     // Swing-up (énergie)
     float keSwing, kthdSwing;
-    // PI vitesse bras (Q-learning)
-    float kpVel, kiVel;
     // Modèle physique du pendule
     float pendMass, pendLcom, pendLen;
     // Sécurité

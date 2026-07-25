@@ -92,7 +92,7 @@ shared with the control loop's state. When touching either ISR, check for priori
   (`ArmShaftSensor`) adapts it, reading through `Encoders::motorShaftAngle()` rather than creating
   a second `Encoder` object on pins 0/1 (which would double-attach interrupts).
   `setDuty(u)` now means a **normalized torque** in [-1,1], scaled by `MOTOR_VOLT_LIMIT` into a
-  q-axis voltage. **Critical split**: `setDuty`/`velocityStep`/`hardStop` run in the 1 kHz ISR and
+  q-axis voltage. **Critical split**: `setDuty`/`hardStop` run in the 1 kHz ISR and
   only update a `volatile float` — they touch no peripheral. `Motor::spin()` does the actual FOC
   commutation and runs in its **own `focTimer` IntervalTimer at `FOC_FREQ_HZ` (10 kHz), at higher
   priority (32) than the control loop (64)** — never from `loop()`, which stalls for tens of ms on
@@ -118,9 +118,13 @@ shared with the control loop's state. When touching either ISR, check for priori
   and kick the pendulum.
 - `qlearning.*` — Q-table is `DMAMEM` (Teensy's second RAM bank) sized `QL_N_ALPHA * QL_N_ADOT *
   QL_N_ACT` floats (~42 kB) to keep it off the primary RAM used by the rest of the firmware.
-  State discretization (`binAlpha`/`binAdot`) and the 7 discrete arm-velocity actions
-  (`ACTION_W`) are config-driven; reward shaping lives in `reward()`. **`bestAction()` must break
-  ties toward `ACT_NEUTRAL`** (the 0 rad/s action), not index 0 — index 0 is `-QL_W_MAX`, so a
+  State discretization (`binAlpha`/`binAdot`) and the 7 discrete actions (`ACTION_U`) are
+  config-driven; reward shaping lives in `reward()`. **Actions are normalized torques applied
+  straight to `Motor::setDuty` — there is deliberately no inner velocity loop.** A velocity setpoint
+  made the process non-Markovian: the torque actually applied depended on the PI integrator state
+  and on `thetaDot`, neither of which the agent observes. Do not reintroduce one.
+  **`bestAction()` must break
+  ties toward `ACT_NEUTRAL`** (zero torque), not index 0 — index 0 is `-QL_U_MAX`, so a
   naive `best=0` start makes an untrained (all-zero) table command full reverse speed forever.
   **The state is `[alpha, alphaDot]` only — `theta` is not observed**, so the policy structurally
   cannot learn to keep the arm centered. Fixing that means adding a theta dimension to the table
@@ -129,9 +133,8 @@ shared with the control loop's state. When touching either ISR, check for priori
   that ends the episode and enters a `resetting` phase which drives the arm back to theta≈0 before
   the next episode starts — training continues rather than halting. **The reset drives the motor
   with a direct torque PD on theta (`QL_RESET_*`, applied in `controlTick`), deliberately bypassing
-  `Motor::velocityStep`** — `KP_VEL`/`KI_VEL` are untuned, and a reset that fails to bring the arm
-  home lets theta ratchet up episode after episode until `FAULT_THETA_RANGE`. Keep the reset
-  independent of that inner loop. This is separate from
+  `controlTick`)** — a reset that fails to bring the arm home lets theta ratchet up episode after
+  episode until `FAULT_THETA_RANGE`. This is separate from
   `TurnsMax`, the system-wide runaway guard that faults out of the mode entirely.
   **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
   that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever
@@ -160,7 +163,7 @@ to the `switch` below it, otherwise Safety checks won't run for it.
   directly depends on the mass/length values being measured from the real part. These (and all
   gains) are now tunable live via the "Reglages" menu and saved to EEPROM, rather than requiring
   a recompile.
-  `KE_SWING`, `K_ALPHA`, `K_ADOT`, `K_TH`, `K_THD`, `KP_VEL`/`KI_VEL` are starting
+  `KE_SWING`, `K_ALPHA`, `K_ADOT`, `K_TH`, `K_THD` are starting
   points to be tuned empirically per the README's ordered bring-up steps — don't reorder that
   sequence (unpowered encoder check → motor sign test → recalibrate → balance-only → swing-up →
   Q-learning) since later steps assume earlier ones are already correct.

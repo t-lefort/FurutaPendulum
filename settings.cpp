@@ -27,8 +27,6 @@ static const Desc TABLE[] = {
   { "K_thi",    "",    &Data::kThi,           0.0f,  0.50f,0.005f, 3 },
   { "Ke_swing", "",    &Data::keSwing,     -200.0f,200.0f, 5.0f,   0 }, // signe a inverser si ca amortit
   { "Kthd_sw",  "",    &Data::kthdSwing,      0.0f, 0.05f, 0.001f, 3 },
-  { "Kp_vel",   "",    &Data::kpVel,          0.0f,  0.50f,0.005f, 3 },
-  { "Ki_vel",   "",    &Data::kiVel,          0.0f,  1.0f, 0.005f, 3 },
   { "PendMass", "kg",  &Data::pendMass,       0.005f,1.0f, 0.005f, 3 },
   { "PendLcom", "m",   &Data::pendLcom,       0.01f, 1.0f, 0.005f, 3 },
   { "PendLen",  "m",   &Data::pendLen,        0.01f, 1.5f, 0.005f, 3 },
@@ -41,10 +39,11 @@ static constexpr int N_PARAM = sizeof(TABLE) / sizeof(TABLE[0]);
 // ---- EEPROM ----
 struct Header { uint32_t magic; uint16_t version; uint16_t size; uint32_t sum; };
 static constexpr uint32_t EE_MAGIC   = 0x46505354; // 'FPST'
-// v3 : suppression du champ vestigial dutyDeadband + ajout de kThi. La taille
-// de Data change, donc le controle 'h.size != sizeof(Data)' de load() rejette
-// automatiquement l'ancienne sauvegarde -> retour aux defauts de config.h.
-static constexpr uint16_t EE_VERSION = 3;
+// v4 : suppression de kpVel/kiVel (le Q-learning commande le couple
+// directement, plus de boucle de vitesse). La taille de Data change, donc le
+// controle 'h.size != sizeof(Data)' de load() rejette automatiquement
+// l'ancienne sauvegarde -> retour aux defauts de config.h.
+static constexpr uint16_t EE_VERSION = 4;
 static constexpr int      EE_ADDR    = 0;
 
 static uint32_t checksum(const Data &d) {
@@ -66,8 +65,6 @@ void loadDefaults() {
   cfg.kThi          = K_TH_I;
   cfg.keSwing       = KE_SWING;
   cfg.kthdSwing     = KTHD_SWING;
-  cfg.kpVel         = KP_VEL;
-  cfg.kiVel         = KI_VEL;
   cfg.pendMass      = PEND_MASS;
   cfg.pendLcom      = PEND_LCOM;
   cfg.pendLen       = PEND_LEN;

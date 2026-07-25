@@ -4,7 +4,7 @@
 // Moteur BLDC pilote en FOC (SimpleFOC) via un SimpleFOCMini + capteur AS5600.
 //
 // REPARTITION DES TACHES — important :
-//   - setDuty/velocityStep/hardStop sont appeles par l'ISR 1 kHz et ne font QUE
+//   - setDuty/hardStop sont appeles par l'ISR 1 kHz et ne font QUE
 //     mettre a jour une consigne (float aligne = ecriture atomique).
 //   - spin() fait la commutation FOC et tourne dans SON PROPRE timer a
 //     FOC_FREQ_HZ (10 kHz), pas dans loop(). C'est indispensable : loop() se
@@ -19,10 +19,6 @@ namespace Motor {
   // Consigne de COUPLE NORMALISE [-1, 1] (mise a l'echelle par MOTOR_VOLT_LIMIT),
   // avec limite et slew rate. À appeler à 1 kHz depuis l'ISR.
   void setDuty(float u);
-
-  // Boucle interne PI de vitesse du bras (pour le Q-learning). À appeler à 1 kHz.
-  void velocityStep(float wTarget, float wMeasured);
-  void resetVelocityPid();
 
   // Coupure immédiate (couple nul) — utilisée par la sécurité
   void hardStop();

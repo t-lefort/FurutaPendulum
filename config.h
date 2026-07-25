@@ -142,17 +142,16 @@ constexpr float BAL_ENTER_RAD  = 0.30f;  // ~17°
 constexpr float BAL_ENTER_ADOT = 7.0f;   // rad/s
 constexpr float BAL_EXIT_RAD   = 0.60f;  // ~34°
 
-// ---------- PID vitesse bras (boucle interne pour le Q-learning) ----------
-constexpr float KP_VEL = 0.030f;   // duty / (rad/s)
-constexpr float KI_VEL = 0.080f;
-constexpr float VEL_I_MAX = 0.30f; // anti-windup
-
 // ---------- Q-learning ----------
 constexpr int   QL_N_ALPHA  = 49;
 constexpr int   QL_N_ADOT   = 31;
 constexpr int   QL_N_ACT    = 7;
 constexpr float QL_ADOT_MAX = 20.0f;   // rad/s, plage de discrétisation
-constexpr float QL_W_MAX    = 12.0f;   // rad/s, vitesse bras max commandée
+// Les actions sont des COUPLES NORMALISES appliques directement au moteur (pas
+// de boucle de vitesse intermediaire). Une consigne de vitesse rendait le
+// processus non markovien : le couple reellement applique dependait de l'etat
+// du PI et de theta_dot, dont aucun n'est observe par l'agent.
+constexpr float QL_U_MAX    = 0.50f;   // couple normalise max commande par le RL
 constexpr float QL_LR       = 0.05f;   // learning rate
 // Horizon : gamma^n a 50 Hz. 0.97 -> demi-vie ~0,45 s : l'agent est bien trop
 // myope pour "voir" un swing-up qui dure plusieurs secondes, il prend donc la
@@ -173,11 +172,9 @@ constexpr float QL_THETA_TURNS = 2.5f;    // tours max pendant un episode (0 = i
 constexpr float QL_R_OUT_RANGE = -50.0f;  // penalite terminale
 
 // --- Remise en place automatique entre deux episodes ---
-// Le retour du bras est pilote en COUPLE (PD sur theta), volontairement SANS
-// passer par la boucle de vitesse KP_VEL/KI_VEL : celle-ci n'est pas reglee,
-// et un retour qui echoue laisse theta grandir d'episode en episode jusqu'a
-// la faute "plage bras". Meme structure que les termes theta de l'equilibre,
-// qui eux sont regles et fonctionnent.
+// Retour du bras pilote en COUPLE (PD sur theta), meme structure que les
+// termes theta de l'equilibre. Un retour qui echoue laisse theta grandir
+// d'episode en episode jusqu'a la faute "plage bras".
 constexpr float QL_RESET_KTH     = 0.15f;  // couple par rad d'ecart
 constexpr float QL_RESET_KTHD    = 0.30f;  // amortissement (par rad/s)
 constexpr float QL_RESET_U       = 0.35f;  // couple max pendant le retour
