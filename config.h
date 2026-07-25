@@ -173,10 +173,16 @@ constexpr float QL_THETA_TURNS = 2.5f;    // tours max pendant un episode (0 = i
 constexpr float QL_R_OUT_RANGE = -50.0f;  // penalite terminale
 
 // --- Remise en place automatique entre deux episodes ---
-constexpr float QL_RESET_KP      = 2.0f;   // (rad/s) commandes par rad d'ecart
-constexpr float QL_RESET_W       = 5.0f;   // rad/s max pendant le retour
-constexpr float QL_RESET_TOL_RAD = 0.15f;  // tolerance d'arrivee
-constexpr float QL_RESET_MAX_S   = 6.0f;   // securite anti-blocage
+// Le retour du bras est pilote en COUPLE (PD sur theta), volontairement SANS
+// passer par la boucle de vitesse KP_VEL/KI_VEL : celle-ci n'est pas reglee,
+// et un retour qui echoue laisse theta grandir d'episode en episode jusqu'a
+// la faute "plage bras". Meme structure que les termes theta de l'equilibre,
+// qui eux sont regles et fonctionnent.
+constexpr float QL_RESET_KTH     = 0.15f;  // couple par rad d'ecart
+constexpr float QL_RESET_KTHD    = 0.30f;  // amortissement (par rad/s)
+constexpr float QL_RESET_U       = 0.35f;  // couple max pendant le retour
+constexpr float QL_RESET_TOL_RAD = 0.25f;  // tolerance d'arrivee
+constexpr float QL_RESET_MAX_S   = 8.0f;   // securite anti-blocage
 
 // ---------- Machine à états ----------
 enum SysState : uint8_t {

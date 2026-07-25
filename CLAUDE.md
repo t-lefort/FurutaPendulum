@@ -127,7 +127,11 @@ shared with the control loop's state. When touching either ISR, check for priori
   (and multiplying its size). Instead, arm drift is handled *episodically*: exceeding
   `QL_THETA_TURNS` is a **terminal state** (reward `QL_R_OUT_RANGE`, no bootstrap on the successor)
   that ends the episode and enters a `resetting` phase which drives the arm back to theta≈0 before
-  the next episode starts — training continues rather than halting. This is separate from
+  the next episode starts — training continues rather than halting. **The reset drives the motor
+  with a direct torque PD on theta (`QL_RESET_*`, applied in `controlTick`), deliberately bypassing
+  `Motor::velocityStep`** — `KP_VEL`/`KI_VEL` are untuned, and a reset that fails to bring the arm
+  home lets theta ratchet up episode after episode until `FAULT_THETA_RANGE`. Keep the reset
+  independent of that inner loop. This is separate from
   `TurnsMax`, the system-wide runaway guard that faults out of the mode entirely.
   **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
   that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever

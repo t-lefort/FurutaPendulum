@@ -83,7 +83,18 @@ static void controlTick() {
         rlWCmd = QLearning::step(isrState, epEnd);
         if (epEnd) qlSaveRequest = true;
       }
-      Motor::velocityStep(rlWCmd, isrState.thetaDot);
+      if (QLearning::isResetting()) {
+        // Retour du bras entre deux épisodes : PD sur theta en COUPLE direct.
+        // On court-circuite volontairement la boucle de vitesse (KP_VEL/KI_VEL
+        // n'est pas réglée) : si le retour échoue, theta grandit d'épisode en
+        // épisode jusqu'à la faute "plage bras".
+        Motor::setDuty(constrain(-QL_RESET_KTH  * isrState.theta
+                                 - QL_RESET_KTHD * isrState.thetaDot,
+                                 -QL_RESET_U, QL_RESET_U));
+        Motor::resetVelocityPid();   // repart sans windup à la fin du reset
+      } else {
+        Motor::velocityStep(rlWCmd, isrState.thetaDot);
+      }
       break;
 
     case ST_MOTOR_TEST:

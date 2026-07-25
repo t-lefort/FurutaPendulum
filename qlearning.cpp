@@ -102,10 +102,12 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
       stepsInEpisode = 0;
       st.episodeReward = 0.0f;
     } else {
-      const float w = constrain(-QL_RESET_KP * s.theta, -QL_RESET_W, QL_RESET_W);
-      st.wCommand = w;
+      // Le retour effectif du bras est applique en COUPLE par l'appelant
+      // (voir isResetting() dans FurutaPendulum.ino) : on ne renvoie donc
+      // aucune consigne de vitesse ici.
+      st.wCommand = 0.0f;
       st.lastAction = 0;
-      return w;
+      return 0.0f;
     }
   }
 
@@ -128,8 +130,11 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
   }
 
   if (outOfRange) {
-    endEpisode();
-    newEpisode = true;
+    // Un episode "vide" (sortie de plage des le premier pas, typiquement si le
+    // retour precedent a echoue) ne doit PAS compter : sinon epsilon decroit
+    // sans qu'aucun apprentissage n'ait eu lieu.
+    if (stepsInEpisode > 0.0f) { endEpisode(); newEpisode = true; }
+    else                       { prevStateIdx = -1; }
     beginReset();
     st.wCommand = 0.0f;
     return 0.0f;
@@ -167,6 +172,8 @@ void QLearning::endEpisode() {
   stepsInEpisode = 0;
   prevStateIdx = -1;
 }
+
+bool QLearning::isResetting() { return resetting; }
 
 const QLearning::Stats& QLearning::stats() { return st; }
 float*  QLearning::table()      { return Q; }

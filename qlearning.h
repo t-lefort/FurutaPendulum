@@ -18,6 +18,10 @@ namespace QLearning {
   // newEpisode est mis à true quand un épisode vient de se terminer.
   float step(const PendulumState &s, bool &newEpisode);
   void  endEpisode();                 // fin anticipée (stop utilisateur / faute)
+  // true entre deux épisodes, pendant le retour du bras vers theta = 0.
+  // L'appelant doit alors piloter le moteur en COUPLE (PD sur theta) au lieu
+  // d'utiliser la consigne de vitesse : voir QL_RESET_* dans config.h.
+  bool  isResetting();
 
   const Stats& stats();
 
