@@ -27,6 +27,9 @@ namespace QLearning {
   //   RS_SETTLE — MOTEUR COUPÉ, on attend que le pendule pende immobile
   enum ResetPhase : uint8_t { RS_NONE = 0, RS_RETURN, RS_SETTLE };
   ResetPhase resetPhase();
+  // true si le retour du bras n'aboutit pas (QL_RESET_FAIL_S) : l'appelant
+  // doit couper le moteur et lever FAULT_QL_RESET plutôt que d'insister.
+  bool resetFailed();
 
   const Stats& stats();
 

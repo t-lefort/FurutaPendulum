@@ -59,7 +59,12 @@ static void controlTick() {
        st == ST_MOTOR_OPENLOOP);
 
   if (motorActive) {
-    const FaultCode f = Safety::check(isrState, Motor::isSaturated());
+    FaultCode f = Safety::check(isrState, Motor::isSaturated());
+    // Retour du bras qui n'aboutit pas : on coupe au lieu d'insister
+    // indéfiniment (sinon le bras finit par dériver jusqu'à TurnsMax).
+    if (f == FAULT_NONE && (st == ST_QL_TRAIN || st == ST_QL_GREEDY) &&
+        QLearning::resetFailed())
+      f = FAULT_QL_RESET;
     if (f != FAULT_NONE) {
       Motor::hardStop();
       faultCode = f;
@@ -84,12 +89,20 @@ static void controlTick() {
         if (epEnd) qlSaveRequest = true;
       }
       switch (QLearning::resetPhase()) {
-        case QLearning::RS_RETURN:
+        case QLearning::RS_RETURN: {
           // Ramène le bras vers theta = 0 : PD sur theta, en couple.
-          Motor::setDuty(constrain(-QL_RESET_KTH  * isrState.theta
-                                   - QL_RESET_KTHD * isrState.thetaDot,
-                                   -QL_RESET_U, QL_RESET_U));
+          float u = constrain(-QL_RESET_KTH  * isrState.theta
+                              - QL_RESET_KTHD * isrState.thetaDot,
+                              -QL_RESET_U, QL_RESET_U);
+          // Gouverneur de vitesse : au-delà de QL_RESET_WMAX on freine, quelle
+          // que soit la sortie du PD. Pendant le reset aucune des conditions
+          // terminales de l'épisode n'est évaluée (step() sort avant), donc
+          // sans ce garde-fou le seul arrêt possible est TurnsMax à 10 tours.
+          if (fabsf(isrState.thetaDot) > QL_RESET_WMAX)
+            u = (isrState.thetaDot > 0.0f) ? -QL_RESET_U : QL_RESET_U;
+          Motor::setDuty(u);
           break;
+        }
         case QLearning::RS_SETTLE:
           // Moteur coupé : le pendule s'amortit tout seul jusqu'en bas.
           Motor::hardStop();
@@ -402,8 +415,11 @@ void loop() {
   static uint32_t lastPrint = 0;
   if (millis() - lastPrint >= 200) {
     lastPrint = millis();
-    Serial.printf("st=%d th=%.2f a=%.3f ad=%.2f td=%.2f u=%.2f\n",
-                  (int)st, lastS.theta, lastS.alpha,
+    // th en TOURS (plus lisible face aux limites) + phase de reset QL
+    // (rs: 0=aucune, 1=retour du bras, 2=attente du repos pendule).
+    Serial.printf("st=%d rs=%d th=%.2ftr a=%.3f ad=%.2f td=%.2f u=%.2f\n",
+                  (int)st, (int)QLearning::resetPhase(),
+                  lastS.theta / (float)TWO_PI, lastS.alpha,
                   lastS.alphaDot, lastS.thetaDot, lastS.duty);
   }
 }

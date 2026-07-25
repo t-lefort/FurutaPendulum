@@ -138,11 +138,14 @@ shared with the control loop's state. When touching either ISR, check for priori
   still (`QL_SETTLE_*`) so every episode starts from the same initial state. Training continues
   rather than halting. **The reset drives the motor
   with a direct torque PD on theta (`QL_RESET_*`, applied in `controlTick`), deliberately bypassing
-  `controlTick`)** — a reset that fails to bring the arm home lets theta ratchet up episode after
-  episode until `FAULT_THETA_RANGE`. Two invariants guard that: **`QL_RESET_U` must be ≥ `QL_U_MAX`**
-  (otherwise braking is slower than the acceleration that caused it and the timeout expires
-  mid-brake), and the reset timeout **never resumes training while still out of range** — it only
-  accepts a partial return once `theta` is back inside `QL_THETA_TURNS`. This is separate from
+  `controlTick`)**. **Critical: while `resetPhase() != RS_NONE`, `step()` returns early, so neither
+  `QL_THETA_TURNS` nor `QL_TDOT_MAX` is evaluated — during a reset the only remaining guard is
+  `TurnsMax` at 10 turns.** Anything that goes wrong there therefore runs the arm all the way to
+  that fault. Three things contain it: a hard **speed governor** (`QL_RESET_WMAX`, applied in
+  `controlTick`) that forces braking regardless of the PD output so runaway is impossible;
+  **`QL_RESET_U` ≥ `QL_U_MAX`** so braking is never weaker than the acceleration that caused it;
+  and `QL_RESET_FAIL_S`, after which the reset gives up and raises `FAULT_QL_RESET` instead of
+  pushing indefinitely. The timeout also never resumes training while still out of range. This is separate from
   `TurnsMax`, the system-wide runaway guard that faults out of the mode entirely.
   **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
   that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever

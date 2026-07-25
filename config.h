@@ -194,8 +194,18 @@ constexpr float QL_RESET_KTHD    = 0.30f;  // amortissement (par rad/s)
 // l'acceleration, le delai expire en plein freinage et theta monte en escalier
 // d'un episode a l'autre jusqu'a la faute "plage bras".
 constexpr float QL_RESET_U       = 0.70f;  // couple max pendant le retour
+// GOUVERNEUR DE VITESSE, garde-fou principal du retour. Pendant les phases de
+// reset, step() sort par un return anticipe : ni QL_THETA_TURNS ni QL_TDOT_MAX
+// ne sont evalues, et le SEUL garde-fou restant est TurnsMax (10 tours). Si
+// quoi que ce soit tourne mal pendant le retour (signe, saturation, elan), le
+// bras file donc jusqu'a 10 tours. Au-dela de cette vitesse on FREINE, quelle
+// que soit la sortie du PD : l'emballement devient impossible.
+constexpr float QL_RESET_WMAX    = 6.0f;   // rad/s max pendant le retour
 constexpr float QL_RESET_TOL_RAD = 0.25f;  // tolerance d'arrivee
 constexpr float QL_RESET_MAX_S   = 15.0f;  // delai avant d'accepter un retour partiel
+// Au-dela, on considere que le retour a echoue : on coupe et on affiche la
+// faute "reset KO" plutot que de laisser le bras derailler en silence.
+constexpr float QL_RESET_FAIL_S  = 25.0f;
 
 // Phase 2 du reset : une fois le bras rentre, MOTEUR COUPE et on attend que le
 // pendule pende immobile. Sans ca un episode peut demarrer pendule n'importe
@@ -240,7 +250,8 @@ enum FaultCode : uint8_t {
   FAULT_THETA_DOT,
   FAULT_THETA_RANGE,
   FAULT_SATURATION,
-  FAULT_USER_STOP
+  FAULT_USER_STOP,
+  FAULT_QL_RESET      // le retour du bras entre 2 episodes n'aboutit pas
 };
 
 // État partagé boucle de contrôle <-> reste du programme

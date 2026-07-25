@@ -274,14 +274,16 @@ void UI::drawAutoTest(uint8_t phase, float dPlus, float dMinus) {
 
 void UI::drawFault(uint8_t code) {
   static const char *NAMES[] = { "aucun", "alpha_dot", "theta_dot",
-                                 "plage bras", "saturation", "stop" };
+                                 "plage bras", "saturation", "stop",
+                                 "reset KO" };
+  static constexpr int N_NAMES = sizeof(NAMES) / sizeof(NAMES[0]);
   if (!fullRedraw) return;
   fullRedraw = false;
   header("FAULT", GC9A01A_RED);
   tft.setTextSize(2);
   tft.setTextColor(GC9A01A_RED, GC9A01A_BLACK);
   tft.setCursor(45, 100);
-  tft.print(code < 6 ? NAMES[code] : "?");
+  tft.print(code < N_NAMES ? NAMES[code] : "?");
   centerText(206, "clic = retour menu");
 }
 

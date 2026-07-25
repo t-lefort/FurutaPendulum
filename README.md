@@ -102,6 +102,7 @@ Résumé :
   | `theta_dot` | survitesse bras | `TdotMax` |
   | `plage bras` | bras au-delà de ±N tours | `TurnsMax` (0 = illimité) |
   | `saturation` | commande saturée en continu trop longtemps | `SAT_TIMEOUT_S` |
+  | `reset KO` | le retour du bras entre 2 épisodes n'aboutit pas | `QL_RESET_*` |
 
   En FAULT le moteur est coupé et **le système y reste jusqu'à un clic**.
 - **Un collecteur tournant équipe l'axe principal** : les signaux de l'encodeur

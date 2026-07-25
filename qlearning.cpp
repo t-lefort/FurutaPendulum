@@ -13,6 +13,7 @@ static float stepsInEpisode = 0;
 // que chaque episode reparte du meme etat.
 static QLearning::ResetPhase rsPhase = QLearning::RS_NONE;
 static float resetTime = 0.0f;
+static bool  resetKo   = false;   // le retour du bras n'aboutit pas
 // Actions = couples normalises appliques DIRECTEMENT au moteur.
 static const float ACTION_U[QL_N_ACT] = {
   -QL_U_MAX, -QL_U_MAX * 0.66f, -QL_U_MAX * 0.33f, 0.0f,
@@ -83,6 +84,7 @@ void QLearning::startSession(bool greedy) {
   st.episodeReward = 0.0f;
   rsPhase   = QLearning::RS_NONE;
   resetTime = 0.0f;
+  resetKo   = false;
 }
 
 static inline void beginReset() {
@@ -124,6 +126,8 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
       if (armHome || (resetTime > QL_RESET_MAX_S && inRange)) {
         rsPhase   = QLearning::RS_SETTLE;   // -> moteur coupe, on laisse pendre
         resetTime = 0.0f;
+      } else if (resetTime > QL_RESET_FAIL_S) {
+        resetKo = true;   // l'appelant coupe et signale la faute
       }
       return 0.0f;
     }
@@ -206,6 +210,7 @@ void QLearning::endEpisode() {
 }
 
 QLearning::ResetPhase QLearning::resetPhase() { return rsPhase; }
+bool QLearning::resetFailed() { return resetKo; }
 
 const QLearning::Stats& QLearning::stats() { return st; }
 float*  QLearning::table()      { return Q; }
