@@ -86,7 +86,12 @@ constexpr float DUTY_SLEW_PER_S = 20.0f;   // variation max par seconde
 // ---------- Boucles ----------
 constexpr float    CTRL_FREQ_HZ = 1000.0f;          // boucle de contrôle
 constexpr float    CTRL_DT      = 1.0f / CTRL_FREQ_HZ;
-constexpr uint32_t RL_DIVIDER   = 20;               // Q-learning à 1000/20 = 50 Hz
+// Q-learning a 1000/50 = 20 Hz. La dynamique du pendule est a ~1,5 Hz : 20 Hz
+// suffit tres largement. A 50 Hz l'agent pouvait demander une inversion de
+// couple pleine echelle toutes les 20 ms -> martelement du train d'engrenages.
+// Bonus : a gamma constant, l'horizon utile double en SECONDES (~3,5 s a 0.99),
+// ce qui est indispensable pour valoriser un swing-up de plusieurs secondes.
+constexpr uint32_t RL_DIVIDER   = 50;
 constexpr float    RL_DT        = CTRL_DT * RL_DIVIDER;
 constexpr float    VEL_FILT_ALPHA = 0.20f;          // passe-bas vitesses (0..1, plus grand = moins filtré)
 
@@ -160,6 +165,11 @@ constexpr float QL_ADOT_MAX = 20.0f;   // rad/s, plage de discrétisation
 // processus non markovien : le couple reellement applique dependait de l'etat
 // du PI et de theta_dot, dont aucun n'est observe par l'agent.
 constexpr float QL_U_MAX    = 0.50f;   // couple normalise max commande par le RL
+// Lissage du couple RL (1er ordre). Les actions sont discretes et peuvent
+// s'inverser d'un pas a l'autre : applique brut, ca fait claquer la mecanique.
+// Une constante de temps courte devant la periode d'action (50 ms a 20 Hz)
+// arrondit les fronts sans introduire de retard notable.
+constexpr float QL_U_TAU    = 0.015f;  // s
 constexpr float QL_LR       = 0.05f;   // learning rate
 // Horizon : gamma^n a 50 Hz. 0.97 -> demi-vie ~0,45 s : l'agent est bien trop
 // myope pour "voir" un swing-up qui dure plusieurs secondes, il prend donc la

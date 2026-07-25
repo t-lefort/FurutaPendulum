@@ -3,7 +3,7 @@
 //  Modes : Classic (swing-up + équilibre) et Q-learning embarqué
 //
 //  Boucle de contrôle : 1 kHz (IntervalTimer)
-//  Q-learning         : 50 Hz (dans la boucle de contrôle)
+//  Q-learning         : 20 Hz (dans la boucle de contrôle)
 //  Écran              : 10 Hz  (loop)
 //  Logs SD            : 50 Hz  (loop)
 // ============================================================
@@ -31,7 +31,8 @@ static PendulumState      snapshot;         // copie pour loop
 
 // Q-learning
 static uint32_t rlCounter = 0;
-static float    rlUCmd = 0.0f;
+static float    rlUCmd = 0.0f;    // action brute choisie par l'agent
+static float    rlApplied = 0.0f; // idem, lissée (QL_U_TAU) avant le moteur
 static volatile bool qlSaveRequest = false;
 
 // Jog manuel
@@ -88,9 +89,13 @@ static void controlTick() {
         // Aucun couple piloté -> aucun emballement possible ; theta est
         // re-zéroté par QLearning au démarrage de l'épisode suivant.
         Motor::hardStop();
+        rlApplied = 0.0f;
       } else {
-        // L'action du RL EST le couple : aucune boucle intermédiaire.
-        Motor::setDuty(rlUCmd);
+        // L'action du RL EST le couple (aucune boucle intermédiaire), mais on
+        // arrondit les fronts : les actions sont discrètes et peuvent
+        // s'inverser d'un pas à l'autre, ce qui ferait claquer la mécanique.
+        rlApplied += (rlUCmd - rlApplied) * (CTRL_DT / QL_U_TAU);
+        Motor::setDuty(rlApplied);
       }
       break;
 
@@ -157,6 +162,7 @@ static void enterState(SysState next) {
   Safety::reset();
   rlCounter = 0;
   rlUCmd = 0.0f;
+  rlApplied = 0.0f;
   jogDuty = 0.0f;
   olVel   = 0.0f;
   atPhase = 0; atTicks = 0;

@@ -46,7 +46,7 @@ auto, Jog manuel) described in README.md's bring-up procedure.
 **Control loop split**: a 1 kHz `IntervalTimer` ISR (`controlTick()` in `FurutaPendulum.ino`) owns
 sensor reads, safety checks, and motor output. `loop()` only handles UI polling, screen redraw
 (10 Hz), SD logging (50 Hz), and Q-table autosave — it must never touch hardware the ISR owns.
-Q-learning runs inside the same 1 kHz ISR but is rate-divided to 50 Hz via `RL_DIVIDER`.
+Q-learning runs inside the same 1 kHz ISR but is rate-divided to 20 Hz via `RL_DIVIDER`.
 
 **Shared-state discipline**: `sysState` (the state machine enum) and `faultCode` are `volatile`,
 written by the ISR, read by `loop()`. The `PendulumState` working copy (`isrState`) is
@@ -124,7 +124,12 @@ shared with the control loop's state. When touching either ISR, check for priori
   config-driven; reward shaping lives in `reward()`. **Actions are normalized torques applied
   straight to `Motor::setDuty` — there is deliberately no inner velocity loop.** A velocity setpoint
   made the process non-Markovian: the torque actually applied depended on the PI integrator state
-  and on `thetaDot`, neither of which the agent observes. Do not reintroduce one.
+  and on `thetaDot`, neither of which the agent observes. Do not reintroduce one. The action *is*
+  first-order smoothed (`QL_U_TAU`, in `controlTick`) before reaching the motor: discrete actions
+  can reverse full-scale between steps and applied raw they hammer the gear train audibly. Keep the
+  time constant short relative to the action period so the applied torque still settles within one
+  RL step. `RL_DIVIDER` sets 20 Hz — well above the ~1.5 Hz pendulum dynamics, and slow enough that
+  a fixed `QL_GAMMA` spans a useful number of *seconds*.
   **`bestAction()` must break
   ties toward `ACT_NEUTRAL`** (zero torque), not index 0 — index 0 is `-QL_U_MAX`, so a
   naive `best=0` start makes an untrained (all-zero) table command full reverse speed forever.
