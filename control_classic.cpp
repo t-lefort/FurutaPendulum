@@ -5,11 +5,13 @@ using Settings::cfg;
 static ControlClassic::Phase ph = ControlClassic::SWINGUP;
 static bool balanceOnlyMode = false;
 static float thetaInt = 0.0f;   // intégrale de theta (anti-frottement statique)
+static float kickTime = 0.0f;   // horloge de l'impulsion d'amorçage
 
 void ControlClassic::reset(bool balanceOnly) {
   balanceOnlyMode = balanceOnly;
   ph = balanceOnly ? BALANCE : SWINGUP;
   thetaInt = 0.0f;
+  kickTime = 0.0f;
 }
 
 ControlClassic::Phase ControlClassic::phase() { return ph; }
@@ -66,6 +68,20 @@ float ControlClassic::update(const PendulumState &s) {
   }
 
   thetaInt = 0.0f;   // phase SWINGUP : pas d'intégrale
+
+  // ---- Amorçage ----
+  // Au repos exact en bas, alpha_dot = 0 : la loi d'énergie ci-dessous vaut
+  // EXACTEMENT 0 et le pendule ne démarre jamais. Petite impulsion alternée
+  // pour briser la symétrie, jusqu'à ce qu'il bouge assez.
+  if (fabsf(s.alphaDot) < SWING_KICK_ADOT &&
+      fabsf(s.alpha) > (float)PI - SWING_KICK_RAD) {
+    kickTime += CTRL_DT;
+    const float dir =
+        (fmodf(kickTime, 2.0f * SWING_KICK_HALF_S) < SWING_KICK_HALF_S)
+        ? 1.0f : -1.0f;
+    return SWING_KICK_U * dir;
+  }
+  kickTime = 0.0f;
 
   // ---- Swing-up par régulation d'énergie ----
   // E = 1/2 J alpha_dot^2 + m g l cos(alpha)   (réf. : E = -mgl en bas, +mgl en haut)

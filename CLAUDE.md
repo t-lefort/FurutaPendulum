@@ -108,7 +108,9 @@ shared with the control loop's state. When touching either ISR, check for priori
 - `safety.*` — pure function `check()` called only while a motor-active state is running; returns
   a `FaultCode`, does not itself stop the motor (caller does).
 - `control_classic.*` — internal `Phase` (SWINGUP/BALANCE) state machine, switches on `s.alpha`
-  thresholds (`BAL_ENTER_RAD`/`BAL_EXIT_RAD` hysteresis band). `balanceOnlyMode` disables the
+  thresholds (`BAL_ENTER_RAD`/`BAL_EXIT_RAD` hysteresis band). The swing-up law is exactly zero at
+  rest (it is proportional to `alphaDot`), so a **`SWING_KICK_*` alternating bootstrap pulse** fires
+  while the pendulum is still and near the bottom — without it the pendulum never starts. `balanceOnlyMode` disables the
   swing-up half entirely for the "Balance seul" menu mode. The balance law carries an optional
   integral on theta (`cfg.kThi`, default 0) to break gear-train stiction; it only accumulates
   near vertical and is clamped by back-calculation to `TH_I_MAX`, and `thetaInt` is zeroed on
@@ -134,7 +136,10 @@ shared with the control loop's state. When touching either ISR, check for priori
   the next episode starts — training continues rather than halting. **The reset drives the motor
   with a direct torque PD on theta (`QL_RESET_*`, applied in `controlTick`), deliberately bypassing
   `controlTick`)** — a reset that fails to bring the arm home lets theta ratchet up episode after
-  episode until `FAULT_THETA_RANGE`. This is separate from
+  episode until `FAULT_THETA_RANGE`. Two invariants guard that: **`QL_RESET_U` must be ≥ `QL_U_MAX`**
+  (otherwise braking is slower than the acceleration that caused it and the timeout expires
+  mid-brake), and the reset timeout **never resumes training while still out of range** — it only
+  accepts a partial return once `theta` is back inside `QL_THETA_TURNS`. This is separate from
   `TurnsMax`, the system-wide runaway guard that faults out of the mode entirely.
   **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
   that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever

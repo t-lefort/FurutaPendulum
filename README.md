@@ -84,7 +84,8 @@ Résumé :
 4. **Balance seul** : placer le pendule à la main près de la verticale (le
    contrôleur ne s'arme que sous ±34°). Régler `K_alpha` puis `K_adot`.
 5. **Classic** : si le pendule s'amortit au lieu de monter, **inverser le signe
-   de `Ke_swing`**.
+   de `Ke_swing`**. Depuis le repos exact en bas, une impulsion d'amorçage
+   (`SWING_KICK_*`) démarre le mouvement : la loi d'énergie seule vaudrait 0.
 6. **QL → Entrainer** : épisodes de 15 s, logs CSV dans `/logs/`, Q-table
    auto-sauvée (`/q_current.bin`, `/q_best.bin`). Les 7 actions sont des
    **couples** appliqués directement au moteur (±`QL_U_MAX`), sans boucle de

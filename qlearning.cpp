@@ -97,7 +97,13 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
     const bool home = fabsf(s.theta)    < QL_RESET_TOL_RAD &&
                       fabsf(s.thetaDot) < 1.0f &&
                       fabsf(s.alphaDot) < 5.0f;
-    if (home || resetTime > QL_RESET_MAX_S) {
+    // Sur expiration du delai on accepte un retour PARTIEL, mais jamais tant
+    // que le bras est encore hors plage : relancer l'entrainement dans cet
+    // etat le ferait repartir de plus loin a chaque episode (effet cliquet)
+    // jusqu'a la faute "plage bras". Mieux vaut continuer a ramener.
+    const bool inRange = (QL_THETA_TURNS <= 0.0f ||
+                          fabsf(s.theta) < QL_THETA_TURNS * (float)TWO_PI);
+    if (home || (resetTime > QL_RESET_MAX_S && inRange)) {
       resetting     = false;
       prevStateIdx  = -1;      // pas de transition a cheval sur le reset
       stepsInEpisode = 0;
@@ -113,9 +119,12 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
   }
 
   const int sIdx = stateIndex(s);
-  // Sortie de plage = etat TERMINAL de l'episode (et non coupure du mode).
-  const bool outOfRange = (QL_THETA_TURNS > 0.0f &&
-                           fabsf(s.theta) > QL_THETA_TURNS * (float)TWO_PI);
+  // Etat TERMINAL de l'episode (et non coupure du mode) : bras hors plage, ou
+  // bras emballe. Couper tot sur la vitesse limite l'elan a freiner ensuite.
+  const bool outOfRange =
+      (QL_THETA_TURNS > 0.0f &&
+       fabsf(s.theta) > QL_THETA_TURNS * (float)TWO_PI) ||
+      (QL_TDOT_MAX > 0.0f && fabsf(s.thetaDot) > QL_TDOT_MAX);
 
   // Mise à jour Q(s,a) avec la transition précédente
   if (!greedyMode && prevStateIdx >= 0) {

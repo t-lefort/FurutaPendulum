@@ -114,6 +114,14 @@ constexpr float G_GRAV     = 9.81f;
 // Swing-up : u = KE_SWING * (E - E_TOP) * alpha_dot * cos(alpha) - KTHD_SWING * theta_dot
 constexpr float KE_SWING   = -50.0f;
 constexpr float KTHD_SWING = 0.004f;
+// Amorcage : au repos EXACT en bas, alpha_dot = 0 donc la loi d'energie rend
+// u = 0 et rien ne demarre jamais (point stationnaire de la commande). On
+// applique une petite impulsion ALTERNEE pour briser la symetrie ; elle pompe
+// le pendule jusqu'a ce qu'il bouge, puis la loi d'energie reprend la main.
+constexpr float SWING_KICK_U      = 0.18f;  // couple d'amorcage
+constexpr float SWING_KICK_ADOT   = 0.30f;  // rad/s en dessous = "immobile"
+constexpr float SWING_KICK_RAD    = 0.25f;  // rad autour de +/-pi = "en bas"
+constexpr float SWING_KICK_HALF_S = 0.25f;  // demi-periode d'alternance
 
 // Équilibre (retour d'état, sortie = duty) :
 // u = -(K_ALPHA*alpha + K_ADOT*alpha_dot + K_TH*theta + K_THD*theta_dot)
@@ -169,6 +177,10 @@ constexpr float QL_EPISODE_S = 15.0f;  // durée d'un épisode
 // A distinguer de TurnsMax, qui coupe tout le mode : ici l'episode se termine
 // et un nouveau redemarre automatiquement, l'entrainement continue.
 constexpr float QL_THETA_TURNS = 2.5f;    // tours max pendant un episode (0 = illimite)
+// Termine aussi l'episode si le bras s'emballe : plus tot on coupe, moins il y
+// a d'elan a freiner au retour. Donne aussi a l'agent un signal clair que
+// prendre de la vitesse est mauvais.
+constexpr float QL_TDOT_MAX    = 15.0f;   // rad/s (0 = desactive)
 constexpr float QL_R_OUT_RANGE = -50.0f;  // penalite terminale
 
 // --- Remise en place automatique entre deux episodes ---
@@ -177,9 +189,13 @@ constexpr float QL_R_OUT_RANGE = -50.0f;  // penalite terminale
 // d'episode en episode jusqu'a la faute "plage bras".
 constexpr float QL_RESET_KTH     = 0.15f;  // couple par rad d'ecart
 constexpr float QL_RESET_KTHD    = 0.30f;  // amortissement (par rad/s)
-constexpr float QL_RESET_U       = 0.35f;  // couple max pendant le retour
+// /!\ DOIT etre >= QL_U_MAX : le retour doit pouvoir freiner un bras lance par
+// l'agent au couple maxi. Plus faible, le freinage dure plus longtemps que
+// l'acceleration, le delai expire en plein freinage et theta monte en escalier
+// d'un episode a l'autre jusqu'a la faute "plage bras".
+constexpr float QL_RESET_U       = 0.70f;  // couple max pendant le retour
 constexpr float QL_RESET_TOL_RAD = 0.25f;  // tolerance d'arrivee
-constexpr float QL_RESET_MAX_S   = 8.0f;   // securite anti-blocage
+constexpr float QL_RESET_MAX_S   = 15.0f;  // delai avant d'accepter un retour partiel
 
 // ---------- Machine à états ----------
 enum SysState : uint8_t {
