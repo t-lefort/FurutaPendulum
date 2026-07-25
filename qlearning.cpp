@@ -25,9 +25,15 @@ static inline int binAdot(float w) {
 static inline int stateIndex(const PendulumState &s) {
   return (binAlpha(s.alpha) * QL_N_ADOT + binAdot(s.alphaDot)) * QL_N_ACT;
 }
+// En cas d'EGALITE (typiquement une table vierge, tout a zero), on doit
+// retomber sur l'action NEUTRE (0 rad/s) et non sur l'indice 0, qui vaut
+// -QL_W_MAX : sinon un agent non entraine commande la vitesse maxi dans un
+// sens en permanence et le bras part en toupie jusqu'a la faute "plage bras".
+static constexpr int ACT_NEUTRAL = QL_N_ACT / 2;   // ACTION_W[3] = 0 rad/s
+
 static inline int bestAction(int sIdx) {
-  int best = 0; float bv = Q[sIdx];
-  for (int a = 1; a < QL_N_ACT; a++)
+  int best = ACT_NEUTRAL; float bv = Q[sIdx + ACT_NEUTRAL];
+  for (int a = 0; a < QL_N_ACT; a++)
     if (Q[sIdx + a] > bv) { bv = Q[sIdx + a]; best = a; }
   return best;
 }
@@ -87,7 +93,7 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
 
   prevStateIdx = sIdx;
   prevAction   = a;
-  st.lastAction = (int8_t)(a - 3);
+  st.lastAction = (int8_t)(a - ACT_NEUTRAL);
   st.wCommand   = ACTION_W[a];
 
   // Gestion de l'épisode

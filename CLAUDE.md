@@ -119,7 +119,12 @@ shared with the control loop's state. When touching either ISR, check for priori
 - `qlearning.*` — Q-table is `DMAMEM` (Teensy's second RAM bank) sized `QL_N_ALPHA * QL_N_ADOT *
   QL_N_ACT` floats (~42 kB) to keep it off the primary RAM used by the rest of the firmware.
   State discretization (`binAlpha`/`binAdot`) and the 7 discrete arm-velocity actions
-  (`ACTION_W`) are config-driven; reward shaping lives in `reward()`. `step()` does the Q-update
+  (`ACTION_W`) are config-driven; reward shaping lives in `reward()`. **`bestAction()` must break
+  ties toward `ACT_NEUTRAL`** (the 0 rad/s action), not index 0 — index 0 is `-QL_W_MAX`, so a
+  naive `best=0` start makes an untrained (all-zero) table command full reverse speed forever.
+  **The state is `[alpha, alphaDot]` only — `theta` is not observed**, so the policy structurally
+  cannot learn to keep the arm centered; expect arm drift and eventual `FAULT_THETA_RANGE` during
+  training. Fixing that means adding a theta dimension to the table (and multiplying its size). `step()` does the Q-update
   for the *previous* transition before selecting the next action (standard online tabular
   Q-learning), and is a no-op update in greedy mode.
 - `storage.*` — microSD (`BUILTIN_SDCARD`) for binary Q-table snapshots (`/q_current.bin`,
