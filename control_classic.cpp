@@ -38,7 +38,15 @@ float ControlClassic::update(const PendulumState &s) {
     // transitoires (arrivée de swing-up) et provoque un à-coup.
     float iTerm = 0.0f;
     if (cfg.kThi > 0.0f && fabsf(s.alpha) < BAL_ENTER_RAD) {
-      thetaInt += s.theta * CTRL_DT;
+      // Bras revenu à la maison ET immobile : plus rien à débloquer, on
+      // désactive l'intégrale. Décharge progressive (constante de temps
+      // TH_I_FADE_S) et non brutale : une coupure nette ferait un saut de
+      // commande pouvant atteindre TH_I_MAX, qui secouerait le pendule.
+      const bool atHome = fabsf(s.theta)    < TH_I_DEAD_RAD &&
+                          fabsf(s.thetaDot) < TH_I_DEAD_DOT;
+      if (atHome) thetaInt -= thetaInt * (CTRL_DT / TH_I_FADE_S);
+      else        thetaInt += s.theta * CTRL_DT;
+
       iTerm = cfg.kThi * thetaInt;
       // Anti-windup par back-calculation : on borne la CONTRIBUTION à la
       // commande, et on recale l'intégrale en conséquence (pas de charge

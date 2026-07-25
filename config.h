@@ -115,15 +115,23 @@ constexpr float KTHD_SWING = 0.004f;
 // u = -(K_ALPHA*alpha + K_ADOT*alpha_dot + K_TH*theta + K_THD*theta_dot)
 constexpr float K_ALPHA = 9.0f;
 constexpr float K_ADOT  = 0.60f;
-constexpr float K_TH    = 0.10f;   // 0 pour ignorer theta (collecteur tournant)
-constexpr float K_THD   = 0.20f;
+constexpr float K_TH    = 0.20f;   // 0 pour ignorer theta (collecteur tournant)
+constexpr float K_THD   = 0.42f;
 // Terme INTEGRAL sur theta. Sert a vaincre le frottement statique du train
 // d'engrenages : quand la commande proportionnelle tombe sous le seuil de
 // decollement, le bras reste coince loin de 0 et l'integrale monte jusqu'a le
 // debloquer. Defaut 0 = desactive : a augmenter progressivement au menu.
-constexpr float K_TH_I  = 0.0f;
+constexpr float K_TH_I  = 0.055f;
 // Contribution max du terme integral a la commande (anti-windup).
 constexpr float TH_I_MAX = 0.25f;
+// Zone morte du terme integral : quand le bras est revenu pres de 0 ET qu'il
+// est a l'arret, il n'y a plus de frottement a vaincre. L'integrale se
+// DECHARGE alors (au lieu de continuer a pousser -> depassement / oscillation).
+// Decharge progressive et non brutale : annuler d'un coup ferait un saut de
+// commande pouvant atteindre TH_I_MAX, qui secouerait le pendule.
+constexpr float TH_I_DEAD_RAD = 0.10f;  // rad (~6 deg) : "bras a la maison"
+constexpr float TH_I_DEAD_DOT = 0.30f;  // rad/s        : "bras immobile"
+constexpr float TH_I_FADE_S   = 0.30f;  // s : constante de temps de decharge
 
 // Commutation swing-up <-> équilibre
 constexpr float BAL_ENTER_RAD  = 0.30f;  // ~17°

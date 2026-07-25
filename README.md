@@ -129,6 +129,9 @@ planté loin de 0 : le frottement statique du train d'engrenages impose un seuil
 de décollement, et une commande de quelques % ne suffit plus à le vaincre.
 L'intégrale monte alors lentement jusqu'à débloquer le bras. Elle n'agit que
 près de la verticale, et sa contribution est bornée à `TH_I_MAX` (anti-windup).
+Dès que le bras est **revenu près de 0 et immobile** (`TH_I_DEAD_RAD` /
+`TH_I_DEAD_DOT`), elle se **décharge** progressivement (`TH_I_FADE_S`) : plus
+rien à débloquer, et ça évite le dépassement puis l'oscillation autour de 0.
 Trop fort → le bras « chasse » (colle / décolle / dépasse) : réduire.
 
 ## Architecture
