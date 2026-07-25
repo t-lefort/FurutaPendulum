@@ -115,6 +115,7 @@ premier boot ou après « Defauts ») ; la valeur appliquée est `Settings::cfg`
 | `PendMass`, `PendLcom`, `PendLen` | modèle physique (énergie du swing-up) |
 | `DutyLim`, `DutySlew` | couple max et vitesse de variation |
 | `K_alpha`, `K_adot`, `K_th`, `K_thd` | équilibre (retour d'état) |
+| `K_thi` | intégrale sur θ : débloque le bras coincé par le frottement |
 | `Ke_swing`, `Kthd_sw` | swing-up par énergie |
 | `Kp_vel`, `Ki_vel` | boucle de vitesse (Q-learning uniquement) |
 | `AdotMax`, `TdotMax`, `TurnsMax` | seuils de sécurité |
@@ -122,6 +123,13 @@ premier boot ou après « Defauts ») ; la valeur appliquée est `Settings::cfg`
 `K_th` ramène le bras vers **θ = 0** (sa position au démarrage / à la dernière
 recalibration). L'augmenter réduit la dérive du bras, mais trop fort il
 déstabilise l'équilibre (système à non-minimum de phase) : compenser avec `K_thd`.
+
+`K_thi` (défaut **0**) ajoute une **intégrale sur θ**. Utile quand le bras reste
+planté loin de 0 : le frottement statique du train d'engrenages impose un seuil
+de décollement, et une commande de quelques % ne suffit plus à le vaincre.
+L'intégrale monte alors lentement jusqu'à débloquer le bras. Elle n'agit que
+près de la verticale, et sa contribution est bornée à `TH_I_MAX` (anti-windup).
+Trop fort → le bras « chasse » (colle / décolle / dépasse) : réduire.
 
 ## Architecture
 

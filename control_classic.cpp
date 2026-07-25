@@ -4,10 +4,12 @@ using Settings::cfg;
 
 static ControlClassic::Phase ph = ControlClassic::SWINGUP;
 static bool balanceOnlyMode = false;
+static float thetaInt = 0.0f;   // intégrale de theta (anti-frottement statique)
 
 void ControlClassic::reset(bool balanceOnly) {
   balanceOnlyMode = balanceOnly;
   ph = balanceOnly ? BALANCE : SWINGUP;
+  thetaInt = 0.0f;
 }
 
 ControlClassic::Phase ControlClassic::phase() { return ph; }
@@ -23,13 +25,39 @@ float ControlClassic::update(const PendulumState &s) {
   }
 
   if (ph == BALANCE) {
-    if (balanceOnlyMode && fabsf(s.alpha) > BAL_EXIT_RAD) return 0.0f; // attend qu'on le place en haut
+    if (balanceOnlyMode && fabsf(s.alpha) > BAL_EXIT_RAD) {  // attend qu'on le place en haut
+      thetaInt = 0.0f;
+      return 0.0f;
+    }
+
+    // Terme intégral sur theta : le frottement statique du train d'engrenages
+    // crée un seuil de décollement. Sous ce seuil, la part proportionnelle
+    // K_th*theta ne suffit plus et le bras reste planté loin de 0 ; l'intégrale
+    // monte alors lentement jusqu'à le débloquer.
+    // On n'intègre QUE près de la verticale, sinon elle se charge pendant les
+    // transitoires (arrivée de swing-up) et provoque un à-coup.
+    float iTerm = 0.0f;
+    if (cfg.kThi > 0.0f && fabsf(s.alpha) < BAL_ENTER_RAD) {
+      thetaInt += s.theta * CTRL_DT;
+      iTerm = cfg.kThi * thetaInt;
+      // Anti-windup par back-calculation : on borne la CONTRIBUTION à la
+      // commande, et on recale l'intégrale en conséquence (pas de charge
+      // fantôme qui mettrait des secondes à se vider).
+      if (iTerm > TH_I_MAX)       { iTerm =  TH_I_MAX; thetaInt = iTerm / cfg.kThi; }
+      else if (iTerm < -TH_I_MAX) { iTerm = -TH_I_MAX; thetaInt = iTerm / cfg.kThi; }
+    } else {
+      thetaInt = 0.0f;
+    }
+
     // Retour d'état linéaire autour de la verticale (PD étendu / LQR simplifié)
     return -(cfg.kAlpha * s.alpha
            + cfg.kAdot  * s.alphaDot
            + cfg.kTh    * s.theta
-           + cfg.kThd   * s.thetaDot);
+           + cfg.kThd   * s.thetaDot
+           + iTerm);
   }
+
+  thetaInt = 0.0f;   // phase SWINGUP : pas d'intégrale
 
   // ---- Swing-up par régulation d'énergie ----
   // E = 1/2 J alpha_dot^2 + m g l cos(alpha)   (réf. : E = -mgl en bas, +mgl en haut)

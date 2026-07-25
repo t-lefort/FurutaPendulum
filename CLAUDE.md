@@ -102,14 +102,17 @@ shared with the control loop's state. When touching either ISR, check for priori
   `Motor::begin()` runs `initFOC()`, which **physically moves the
   motor** for alignment — it runs before `Encoders::begin()` so calibration happens after.
   `MOTOR_POLE_PAIRS` must match the motor (7 for a 12N14P GBM2804) or alignment fails.
-  Deadband compensation is gone (FOC is smooth from 0 rpm). `DUTY_DEADBAND` / `cfg.dutyDeadband`
-  are vestigial: the field is kept **only** to hold `sizeof(Settings::Data)` stable so existing
-  EEPROM saves stay valid, and it is no longer listed in the settings editor.
+  Deadband compensation is gone (FOC is smooth from 0 rpm) — but note that only removes *motor*
+  deadband; the gear train's static friction is real and is handled by the `kThi` integral term
+  in `control_classic`, not here.
 - `safety.*` — pure function `check()` called only while a motor-active state is running; returns
   a `FaultCode`, does not itself stop the motor (caller does).
 - `control_classic.*` — internal `Phase` (SWINGUP/BALANCE) state machine, switches on `s.alpha`
   thresholds (`BAL_ENTER_RAD`/`BAL_EXIT_RAD` hysteresis band). `balanceOnlyMode` disables the
-  swing-up half entirely for the "Balance seul" menu mode.
+  swing-up half entirely for the "Balance seul" menu mode. The balance law carries an optional
+  integral on theta (`cfg.kThi`, default 0) to break gear-train stiction; it only accumulates
+  near vertical and is clamped by back-calculation to `TH_I_MAX`, and `thetaInt` is zeroed on
+  every path that leaves balance so it never carries stale charge into a new attempt.
 - `qlearning.*` — Q-table is `DMAMEM` (Teensy's second RAM bank) sized `QL_N_ALPHA * QL_N_ADOT *
   QL_N_ACT` floats (~42 kB) to keep it off the primary RAM used by the rest of the firmware.
   State discretization (`binAlpha`/`binAdot`) and the 7 discrete arm-velocity actions

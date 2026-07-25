@@ -16,11 +16,9 @@ namespace Settings {
     // Signes (±1)
     float armSign, pendSign;
     // Moteur / alim
-    // dutyDeadband : INUTILISE depuis le passage en FOC. Conserve uniquement
-    // pour garder sizeof(Data) stable (compatibilite des sauvegardes EEPROM).
-    float dutyLimit, dutySlew, dutyDeadband;
-    // Équilibre (retour d'état)
-    float kAlpha, kAdot, kTh, kThd;
+    float dutyLimit, dutySlew;
+    // Équilibre (retour d'état) ; kThi = integrale sur theta (anti-frottement)
+    float kAlpha, kAdot, kTh, kThd, kThi;
     // Swing-up (énergie)
     float keSwing, kthdSwing;
     // PI vitesse bras (Q-learning)

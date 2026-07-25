@@ -20,13 +20,11 @@ static const Desc TABLE[] = {
   { "PendSign", "",    &Data::pendSign,      -1.0f,  1.0f, 2.0f,   0 },
   { "DutyLim",  "",    &Data::dutyLimit,      0.05f, 0.90f, 0.05f, 2 },
   { "DutySlew", "/s",  &Data::dutySlew,       0.5f, 20.0f, 0.5f,   1 },
-  // "Deadband" retire : inerte depuis le passage en FOC (le couple est lisse
-  // des 0 tr/min). Le CHAMP est conserve dans Data pour ne pas changer la
-  // taille de la struct -> les reglages deja sauves en EEPROM restent valides.
   { "K_alpha",  "",    &Data::kAlpha,         0.0f, 40.0f, 0.5f,   1 },
   { "K_adot",   "",    &Data::kAdot,          0.0f,  5.0f, 0.05f,  2 },
   { "K_th",     "",    &Data::kTh,            0.0f,  2.0f, 0.01f,  2 },
   { "K_thd",    "",    &Data::kThd,           0.0f,  2.0f, 0.01f,  2 },
+  { "K_thi",    "",    &Data::kThi,           0.0f,  0.50f,0.005f, 3 },
   { "Ke_swing", "",    &Data::keSwing,     -200.0f,200.0f, 5.0f,   0 }, // signe a inverser si ca amortit
   { "Kthd_sw",  "",    &Data::kthdSwing,      0.0f, 0.05f, 0.001f, 3 },
   { "Kp_vel",   "",    &Data::kpVel,          0.0f,  0.50f,0.005f, 3 },
@@ -43,10 +41,10 @@ static constexpr int N_PARAM = sizeof(TABLE) / sizeof(TABLE[0]);
 // ---- EEPROM ----
 struct Header { uint32_t magic; uint16_t version; uint16_t size; uint32_t sum; };
 static constexpr uint32_t EE_MAGIC   = 0x46505354; // 'FPST'
-// v2 : passage moteur BLDC/FOC. Le bump invalide volontairement les reglages
-// sauvegardes pour le RS-550 (constante de couple totalement differente) ->
-// rechargement automatique des defauts de config.h au premier boot.
-static constexpr uint16_t EE_VERSION = 2;
+// v3 : suppression du champ vestigial dutyDeadband + ajout de kThi. La taille
+// de Data change, donc le controle 'h.size != sizeof(Data)' de load() rejette
+// automatiquement l'ancienne sauvegarde -> retour aux defauts de config.h.
+static constexpr uint16_t EE_VERSION = 3;
 static constexpr int      EE_ADDR    = 0;
 
 static uint32_t checksum(const Data &d) {
@@ -61,11 +59,11 @@ void loadDefaults() {
   cfg.pendSign      = PEND_SIGN;
   cfg.dutyLimit     = DUTY_LIMIT;
   cfg.dutySlew      = DUTY_SLEW_PER_S;
-  cfg.dutyDeadband  = DUTY_DEADBAND;
   cfg.kAlpha        = K_ALPHA;
   cfg.kAdot         = K_ADOT;
   cfg.kTh           = K_TH;
   cfg.kThd          = K_THD;
+  cfg.kThi          = K_TH_I;
   cfg.keSwing       = KE_SWING;
   cfg.kthdSwing     = KTHD_SWING;
   cfg.kpVel         = KP_VEL;

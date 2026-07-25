@@ -179,13 +179,12 @@ void UI::drawClassic(const PendulumState &s, uint8_t phase, bool balanceOnly) {
     tft.setCursor(55, 50);
     tft.print(phase == 1 ? "EQUILIBRE" : "SWING-UP ");
   }
-  liveValue(80,  "a:  ", degrees(s.alpha), " deg");
-  liveValue(105, "ad: ", s.alphaDot, "");
-  liveValue(130, "td: ", s.thetaDot, "");
-  liveValue(155, "u:  ", s.duty * 100.0f, " %");
+  // Affichage volontairement minimal : angle pendule, position bras, consigne.
+  liveValue(90,  "a:  ", degrees(s.alpha), " deg");
   // Position du bras en TOURS : permet de voir la dérive approcher TurnsMax
   // (au-delà -> faute "plage bras" et arrêt moteur).
-  liveValue(180, "th: ", s.theta / (float)TWO_PI, " tr");
+  liveValue(125, "th: ", s.theta / (float)TWO_PI, " tr");
+  liveValue(160, "u:  ", s.duty * 100.0f, " %");
 }
 
 void UI::drawQLearn(const PendulumState &s, uint32_t ep, float epsR, float epR,

@@ -79,9 +79,9 @@ constexpr float FOC_FREQ_HZ      = 10000.0f;
 // qui est mis a l'echelle par MOTOR_VOLT_LIMIT.
 constexpr float DUTY_LIMIT      = 0.90f;  // fraction max du couple dispo
 constexpr float DUTY_SLEW_PER_S = 20.0f;   // variation max par seconde
-// LEGACY : plus utilise du tout depuis le passage en FOC (le couple est lisse
-// des 0 tr/min). Conserve pour initialiser le champ vestigial de Settings.
-constexpr float DUTY_DEADBAND   = 0.0f;
+// (La compensation de zone morte a ete supprimee : la FOC est lisse des
+//  0 tr/min. Le frottement statique de la mecanique est traite par le terme
+//  integral K_TH_I plus bas.)
 
 // ---------- Boucles ----------
 constexpr float    CTRL_FREQ_HZ = 1000.0f;          // boucle de contrôle
@@ -117,6 +117,13 @@ constexpr float K_ALPHA = 9.0f;
 constexpr float K_ADOT  = 0.60f;
 constexpr float K_TH    = 0.10f;   // 0 pour ignorer theta (collecteur tournant)
 constexpr float K_THD   = 0.20f;
+// Terme INTEGRAL sur theta. Sert a vaincre le frottement statique du train
+// d'engrenages : quand la commande proportionnelle tombe sous le seuil de
+// decollement, le bras reste coince loin de 0 et l'integrale monte jusqu'a le
+// debloquer. Defaut 0 = desactive : a augmenter progressivement au menu.
+constexpr float K_TH_I  = 0.0f;
+// Contribution max du terme integral a la commande (anti-windup).
+constexpr float TH_I_MAX = 0.25f;
 
 // Commutation swing-up <-> équilibre
 constexpr float BAL_ENTER_RAD  = 0.30f;  // ~17°
