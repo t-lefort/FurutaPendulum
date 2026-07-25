@@ -132,8 +132,11 @@ shared with the control loop's state. When touching either ISR, check for priori
   cannot learn to keep the arm centered. Fixing that means adding a theta dimension to the table
   (and multiplying its size). Instead, arm drift is handled *episodically*: exceeding
   `QL_THETA_TURNS` is a **terminal state** (reward `QL_R_OUT_RANGE`, no bootstrap on the successor)
-  that ends the episode and enters a `resetting` phase which drives the arm back to theta≈0 before
-  the next episode starts — training continues rather than halting. **The reset drives the motor
+  that ends the episode and enters a two-phase reset sequence (`resetPhase()`), during which the
+  agent is fully inhibited (no action selected, no Q update): **`RS_RETURN`** drives the arm back to
+  theta≈0 with the PD torque, then **`RS_SETTLE`** cuts the motor and waits for the pendulum to hang
+  still (`QL_SETTLE_*`) so every episode starts from the same initial state. Training continues
+  rather than halting. **The reset drives the motor
   with a direct torque PD on theta (`QL_RESET_*`, applied in `controlTick`), deliberately bypassing
   `controlTick`)** — a reset that fails to bring the arm home lets theta ratchet up episode after
   episode until `FAULT_THETA_RANGE`. Two invariants guard that: **`QL_RESET_U` must be ≥ `QL_U_MAX`**

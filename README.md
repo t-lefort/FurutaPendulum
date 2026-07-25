@@ -152,7 +152,8 @@ Trop fort → le bras « chasse » (colle / décolle / dépasse) : réduire.
   commutation dans son propre timer ; mode open-loop pour les tests au banc
 - `safety.*` — survitesses, plage bras, saturation
 - `control_classic.*` — swing-up énergie + retour d'état, commutation auto
-- `qlearning.*` — Q-table 49×31×7 (float, DMAMEM), ε-greedy, épisodes ;
-  sortie de plage du bras = fin d'épisode + retour automatique à θ ≈ 0
+- `qlearning.*` — Q-table 49×31×7 (float, DMAMEM), ε-greedy, épisodes ; entre
+  deux épisodes : retour du bras à θ ≈ 0, puis moteur coupé le temps que le
+  pendule pende immobile (état initial identique à chaque épisode)
 - `storage.*` — Q-table binaire + logs CSV sur microSD (optionnelle)
 - `ui.*` — écran GC9A01 + encodeur KY-040 (menu, écrans live, fautes, réglages)

@@ -83,14 +83,21 @@ static void controlTick() {
         rlUCmd = QLearning::step(isrState, epEnd);
         if (epEnd) qlSaveRequest = true;
       }
-      if (QLearning::isResetting()) {
-        // Retour du bras entre deux épisodes : PD sur theta, en couple.
-        Motor::setDuty(constrain(-QL_RESET_KTH  * isrState.theta
-                                 - QL_RESET_KTHD * isrState.thetaDot,
-                                 -QL_RESET_U, QL_RESET_U));
-      } else {
-        // L'action du RL EST le couple : aucune boucle intermédiaire.
-        Motor::setDuty(rlUCmd);
+      switch (QLearning::resetPhase()) {
+        case QLearning::RS_RETURN:
+          // Ramène le bras vers theta = 0 : PD sur theta, en couple.
+          Motor::setDuty(constrain(-QL_RESET_KTH  * isrState.theta
+                                   - QL_RESET_KTHD * isrState.thetaDot,
+                                   -QL_RESET_U, QL_RESET_U));
+          break;
+        case QLearning::RS_SETTLE:
+          // Moteur coupé : le pendule s'amortit tout seul jusqu'en bas.
+          Motor::hardStop();
+          break;
+        default:
+          // L'action du RL EST le couple : aucune boucle intermédiaire.
+          Motor::setDuty(rlUCmd);
+          break;
       }
       break;
 

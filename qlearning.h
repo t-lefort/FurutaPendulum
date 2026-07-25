@@ -19,10 +19,14 @@ namespace QLearning {
   // newEpisode est mis à true quand un épisode vient de se terminer.
   float step(const PendulumState &s, bool &newEpisode);
   void  endEpisode();                 // fin anticipée (stop utilisateur / faute)
-  // true entre deux épisodes, pendant le retour du bras vers theta = 0.
-  // L'appelant doit alors piloter le moteur en COUPLE (PD sur theta) au lieu
-  // d'utiliser la consigne de vitesse : voir QL_RESET_* dans config.h.
-  bool  isResetting();
+
+  // Séquence entre deux épisodes. L'agent est inhibé pendant toute la
+  // séquence (aucune action choisie, aucune mise à jour de Q) ; c'est
+  // l'appelant qui pilote le moteur selon la phase :
+  //   RS_RETURN — ramener le bras vers theta = 0 (PD en couple, QL_RESET_*)
+  //   RS_SETTLE — MOTEUR COUPÉ, on attend que le pendule pende immobile
+  enum ResetPhase : uint8_t { RS_NONE = 0, RS_RETURN, RS_SETTLE };
+  ResetPhase resetPhase();
 
   const Stats& stats();
 

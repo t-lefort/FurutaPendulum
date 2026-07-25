@@ -197,6 +197,15 @@ constexpr float QL_RESET_U       = 0.70f;  // couple max pendant le retour
 constexpr float QL_RESET_TOL_RAD = 0.25f;  // tolerance d'arrivee
 constexpr float QL_RESET_MAX_S   = 15.0f;  // delai avant d'accepter un retour partiel
 
+// Phase 2 du reset : une fois le bras rentre, MOTEUR COUPE et on attend que le
+// pendule pende immobile. Sans ca un episode peut demarrer pendule n'importe
+// ou et encore en mouvement -> etats initiaux incoherents d'un episode a
+// l'autre, ce qui brouille l'apprentissage.
+constexpr float QL_SETTLE_RAD       = 0.35f; // rad autour de +/-pi = "en bas"
+constexpr float QL_SETTLE_ADOT      = 0.60f; // rad/s = "immobile"
+constexpr float QL_SETTLE_MAX_S     = 8.0f;  // delai max d'attente
+constexpr float QL_SETTLE_DRIFT_RAD = 1.5f;  // au-dela, on re-ramene le bras
+
 // ---------- Machine à états ----------
 enum SysState : uint8_t {
   ST_IDLE = 0,

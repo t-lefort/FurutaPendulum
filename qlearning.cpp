@@ -8,10 +8,11 @@ static bool  greedyMode = false;
 static int   prevStateIdx = -1;
 static int   prevAction   = 0;
 static float stepsInEpisode = 0;
-// Phase de remise en place : entre deux episodes on ramene le bras vers
-// theta = 0 avant de relancer, pour repartir d'un etat coherent.
-static bool  resetting  = false;
-static float resetTime  = 0.0f;
+// Sequence de remise en place entre deux episodes : on ramene le bras vers
+// theta = 0, puis moteur coupe on attend que le pendule pende immobile, pour
+// que chaque episode reparte du meme etat.
+static QLearning::ResetPhase rsPhase = QLearning::RS_NONE;
+static float resetTime = 0.0f;
 // Actions = couples normalises appliques DIRECTEMENT au moteur.
 static const float ACTION_U[QL_N_ACT] = {
   -QL_U_MAX, -QL_U_MAX * 0.66f, -QL_U_MAX * 0.33f, 0.0f,
@@ -80,42 +81,63 @@ void QLearning::startSession(bool greedy) {
   prevStateIdx = -1;
   stepsInEpisode = 0;
   st.episodeReward = 0.0f;
-  resetting = false;
+  rsPhase   = QLearning::RS_NONE;
   resetTime = 0.0f;
 }
 
-static inline void beginReset() { resetting = true; resetTime = 0.0f; }
+static inline void beginReset() {
+  rsPhase   = QLearning::RS_RETURN;
+  resetTime = 0.0f;
+}
+
+// Fin de la sequence : l'episode suivant peut demarrer.
+static inline void endReset() {
+  rsPhase          = QLearning::RS_NONE;
+  resetTime        = 0.0f;
+  prevStateIdx     = -1;    // pas de transition a cheval sur le reset
+  stepsInEpisode   = 0;
+  st.episodeReward = 0.0f;
+}
 
 float QLearning::step(const PendulumState &s, bool &newEpisode) {
   newEpisode = false;
 
-  // ---- Remise en place entre deux episodes ----
-  // Ramene le bras vers theta = 0 avant de relancer : sans ca, l'episode
-  // suivant repartirait bras deja en butee et se terminerait aussitot.
-  if (resetting) {
+  // ---- Remise en place entre deux episodes (agent inhibe) ----
+  // 1) RS_RETURN : ramener le bras vers theta = 0 (sinon l'episode suivant
+  //    repartirait bras deja en butee et se terminerait aussitot).
+  // 2) RS_SETTLE : moteur coupe, attendre que le pendule pende immobile, pour
+  //    que tous les episodes partent du meme etat initial.
+  if (rsPhase != QLearning::RS_NONE) {
     resetTime += RL_DT;
-    const bool home = fabsf(s.theta)    < QL_RESET_TOL_RAD &&
-                      fabsf(s.thetaDot) < 1.0f &&
-                      fabsf(s.alphaDot) < 5.0f;
-    // Sur expiration du delai on accepte un retour PARTIEL, mais jamais tant
-    // que le bras est encore hors plage : relancer l'entrainement dans cet
-    // etat le ferait repartir de plus loin a chaque episode (effet cliquet)
-    // jusqu'a la faute "plage bras". Mieux vaut continuer a ramener.
-    const bool inRange = (QL_THETA_TURNS <= 0.0f ||
-                          fabsf(s.theta) < QL_THETA_TURNS * (float)TWO_PI);
-    if (home || (resetTime > QL_RESET_MAX_S && inRange)) {
-      resetting     = false;
-      prevStateIdx  = -1;      // pas de transition a cheval sur le reset
-      stepsInEpisode = 0;
-      st.episodeReward = 0.0f;
-    } else {
-      // Le retour effectif du bras est applique en COUPLE par l'appelant
-      // (voir isResetting() dans FurutaPendulum.ino) : on ne renvoie donc
-      // aucune consigne de vitesse ici.
-      st.uCommand = 0.0f;
-      st.lastAction = 0;
+    st.uCommand   = 0.0f;    // l'agent est inhibe pendant toute la sequence
+    st.lastAction = 0;
+
+    if (rsPhase == QLearning::RS_RETURN) {
+      const bool armHome = fabsf(s.theta)    < QL_RESET_TOL_RAD &&
+                           fabsf(s.thetaDot) < 1.0f;
+      // Sur expiration du delai on accepte un retour PARTIEL, mais jamais tant
+      // que le bras est encore hors plage : relancer dans cet etat le ferait
+      // repartir de plus loin a chaque episode (effet cliquet) jusqu'a la
+      // faute "plage bras". Mieux vaut continuer a ramener.
+      const bool inRange = (QL_THETA_TURNS <= 0.0f ||
+                            fabsf(s.theta) < QL_THETA_TURNS * (float)TWO_PI);
+      if (armHome || (resetTime > QL_RESET_MAX_S && inRange)) {
+        rsPhase   = QLearning::RS_SETTLE;   // -> moteur coupe, on laisse pendre
+        resetTime = 0.0f;
+      }
       return 0.0f;
     }
+
+    // ---- RS_SETTLE : moteur coupe (par l'appelant), on attend le repos ----
+    if (fabsf(s.theta) > QL_SETTLE_DRIFT_RAD) {   // bras parti a la derive
+      rsPhase   = QLearning::RS_RETURN;
+      resetTime = 0.0f;
+      return 0.0f;
+    }
+    const bool hanging = fabsf(s.alpha)    > (float)PI - QL_SETTLE_RAD &&
+                         fabsf(s.alphaDot) < QL_SETTLE_ADOT;
+    if (!hanging && resetTime <= QL_SETTLE_MAX_S) return 0.0f;
+    endReset();     // pret : on enchaine sur le nouvel episode ci-dessous
   }
 
   const int sIdx = stateIndex(s);
@@ -183,7 +205,7 @@ void QLearning::endEpisode() {
   prevStateIdx = -1;
 }
 
-bool QLearning::isResetting() { return resetting; }
+QLearning::ResetPhase QLearning::resetPhase() { return rsPhase; }
 
 const QLearning::Stats& QLearning::stats() { return st; }
 float*  QLearning::table()      { return Q; }
