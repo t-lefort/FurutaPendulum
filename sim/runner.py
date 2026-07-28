@@ -243,7 +243,11 @@ class Runner:
                 self.rl_applied = 0.0
             else:
                 self.rl_applied += (self.rl_u_cmd - self.rl_applied) * (cfg.CTRL_DT / cfg.QL_U_TAU)
-                self.motor.set_duty(self.rl_applied)
+                self.motor.set_duty(
+                    self.rl_applied,
+                    float(getattr(cfg, "QL_DUTY_SLEW_PER_S",
+                                  cfg.DUTY_SLEW_PER_S)),
+                )
         else:
             self.motor.set_duty(self.classic.update(
                 self.enc.theta, self.enc.alpha, self.enc.theta_dot, self.enc.alpha_dot))

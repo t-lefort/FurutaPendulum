@@ -86,11 +86,8 @@ constexpr float FOC_FREQ_HZ      = 10000.0f;
 // Limites de commande. La "duty" est desormais un COUPLE NORMALISE [-1, 1]
 // qui est mis a l'echelle par MOTOR_VOLT_LIMIT.
 constexpr float DUTY_LIMIT      = 0.90f;  // fraction max du couple dispo
-// Variation max par seconde. /!\ Doit laisser une INVERSION PLEINE ECHELLE
-// tenir dans un pas RL (50 ms a 20 Hz) : il faut 2*QL_U_MAX / DUTY_SLEW < RL_DT.
-// A 20/s le couple demande n'etait jamais atteint avant le pas suivant -> le
-// pompage perdait son mordant et l'agent apprenait sur un couple qu'il n'avait
-// pas commande (processus non markovien).
+// Variation max par seconde du controle classique. Le RL utilise sa propre limite
+// QL_DUTY_SLEW_PER_S afin de ne pas modifier le comportement valide au banc.
 constexpr float DUTY_SLEW_PER_S = 40.0f;
 // (La compensation de zone morte a ete supprimee : la FOC est lisse des
 //  0 tr/min. Le frottement statique de la mecanique est traite par le terme
@@ -99,12 +96,10 @@ constexpr float DUTY_SLEW_PER_S = 40.0f;
 // ---------- Boucles ----------
 constexpr float    CTRL_FREQ_HZ = 1000.0f;          // boucle de contrôle
 constexpr float    CTRL_DT      = 1.0f / CTRL_FREQ_HZ;
-// Q-learning a 1000/50 = 20 Hz. La dynamique du pendule est a ~1,5 Hz : 20 Hz
-// suffit tres largement. A 50 Hz l'agent pouvait demander une inversion de
-// couple pleine echelle toutes les 20 ms -> martelement du train d'engrenages.
-// Bonus : a gamma constant, l'horizon utile double en SECONDES (~3,5 s a 0.99),
-// ce qui est indispensable pour valoriser un swing-up de plusieurs secondes.
-constexpr uint32_t RL_DIVIDER   = 50;
+// SARSA a 1000/20 = 50 Hz. Cette cadence echantillonne correctement le passage
+// rapide au sommet ; le lissage et le slew rate propres au RL protegent le
+// train d'engrenages contre les inversions d'actions discretes.
+constexpr uint32_t RL_DIVIDER   = 20;
 constexpr float    RL_DT        = CTRL_DT * RL_DIVIDER;
 constexpr float    VEL_FILT_ALPHA = 0.20f;          // passe-bas vitesses (0..1, plus grand = moins filtré)
 
@@ -216,55 +211,57 @@ constexpr float QL_ADOT_MAX = 28.0f;   // rad/s, plage de discrétisation
 // jusqu'a ce que le bras decolle, puis prendre un cran au-dessus.
 constexpr float QL_U_MIN    = 0.25f;   // couple minimal qui met reellement en mouvement
 constexpr float QL_U_MAX    = 0.70f;   // couple normalise max commande par le RL
+// Limiteur propre au RL : ne modifie pas le DutySlew du controle classique.
+constexpr float QL_DUTY_SLEW_PER_S = 80.0f;
 // Lissage du couple RL (1er ordre). Les actions sont discretes et peuvent
 // s'inverser d'un pas a l'autre : applique brut, ca fait claquer la mecanique.
-// Une constante de temps courte devant la periode d'action (50 ms a 20 Hz)
+// Une constante de temps courte devant la periode d'action (20 ms a 50 Hz)
 // arrondit les fronts sans introduire de retard notable.
-constexpr float QL_U_TAU    = 0.025f;  // s
-constexpr float QL_LR       = 0.05f;   // learning rate
+constexpr float QL_U_TAU    = 0.002f;  // s
+constexpr float QL_LR       = 0.03f;   // learning rate
 // Décroissance par épisode. À pas constant, la petite représentation compacte
 // continue de déplacer une politique déjà bonne : une tenue gloutonne de 0,62 s
 // à l'épisode 2000 retombait à 0,00 s à 2500. Le plancher permet de continuer à
 // s'adapter lentement sur le vrai montage.
-constexpr float QL_LR_DECAY = 1.0f;    // 1 = pas constant (historique)
-constexpr float QL_LR_MIN   = 0.0f;
+constexpr float QL_LR_DECAY = 0.9995f;
+constexpr float QL_LR_MIN   = 0.0005f;
 // Horizon : gamma^n a 50 Hz. 0.97 -> demi-vie ~0,45 s : l'agent est bien trop
 // myope pour "voir" un swing-up qui dure plusieurs secondes, il prend donc la
 // recompense immediate. 0.99 -> ~1,4 s ; 0.995 -> ~2,8 s.
 constexpr float QL_GAMMA    = 0.995f;
 constexpr float QL_EPS0     = 0.30f;
-constexpr float QL_EPS_MIN  = 0.02f;
-constexpr float QL_EPS_DECAY = 0.995f; // par épisode
+constexpr float QL_EPS_MIN  = 0.001f;
+constexpr float QL_EPS_DECAY = 0.998f; // par épisode
 // Exploration locale indépendante. Contrairement à QL_EPS_DECAY, cette valeur
 // ne décroît que lorsqu'une décision est réellement prise près du sommet. Une
 // seed qui atteint rarement le haut conserve ainsi son budget d'exploration.
 // QL_EPS_TOP0 < 0 garde le comportement historique QL_EXPLORE_EPS_TOP.
-constexpr float QL_EPS_TOP0      = -1.0f;
-constexpr float QL_EPS_TOP_MIN   = 0.02f;
-constexpr float QL_EPS_TOP_DECAY = 0.9999f; // par décision locale
+constexpr float QL_EPS_TOP0      = 0.10f;
+constexpr float QL_EPS_TOP_MIN   = 0.001f;
+constexpr float QL_EPS_TOP_DECAY = 0.9995f; // par décision locale
 constexpr float QL_EPISODE_S = 15.0f;  // durée d'un épisode
 // Une arrivee au sommet est rare et survient souvent tard dans l'episode.
 // Ajouter UNE fois cette fenetre a la premiere entree pres du haut evite de
 // couper l'apprentissage au moment precis ou les echantillons d'equilibre
 // deviennent disponibles. Portable sur la machine : aucun reset artificiel,
 // aucun controleur auxiliaire, l'agent continue simplement son episode.
-constexpr float QL_FIRST_UP_RAD     = 0.35f;
+constexpr float QL_FIRST_UP_RAD     = 0.175f;
 constexpr float QL_FIRST_UP_BONUS_S = 30.0f;  // episode total <= 45 s
 // Apres le premier rattrapage, une chute peut clore immediatement la tentative.
 // Chaque episode repart toujours du bas : ce n'est ni un curriculum, ni un
 // controleur auxiliaire. 0 = desactive ; 0.52 rad ~= 30 deg.
-constexpr float QL_AFTER_UP_FALL_RAD = 0.0f;
+constexpr float QL_AFTER_UP_FALL_RAD = 0.52f;
 // N'armer cette terminaison qu'apres une premiere tenue continue. Avant cela,
 // l'episode prolonge peut fournir plusieurs tentatives de rattrapage.
 // 0 = armee des la premiere entree dans QL_FIRST_UP_RAD.
-constexpr float QL_AFTER_UP_ARM_S = 0.0f;
+constexpr float QL_AFTER_UP_ARM_S = 1.0f;
 // Exploration PERSISTANTE : une action aleatoire est TENUE pendant N pas RL.
 // Tiree a nouveau a chaque pas, l'exploration epsilon-greedy est un bruit blanc
-// a 20 Hz : sa moyenne est nulle, elle ne peut donc pas POMPER un oscillateur a
+// a 50 Hz : sa moyenne est nulle, elle ne peut donc pas POMPER un oscillateur a
 // ~1,5 Hz (il faut ~1/3 de s de couple dans le meme sens). L'agent ne rencontre
 // jamais un debut de swing-up, donc ne peut pas l'apprendre.
-// 4 pas = 200 ms, de l'ordre de la demi-periode du pendule.
-constexpr int   QL_EXPLORE_HOLD = 4;
+// 6 pas = 120 ms ; pres du sommet QL_EXPLORE_HOLD_TOP reprend la main.
+constexpr int   QL_EXPLORE_HOLD = 6;
 
 // --- Fin d'episode sur sortie de plage du bras ---
 // Sans rapport avec le collecteur tournant (la rotation est libre) : c'est une
@@ -275,7 +272,7 @@ constexpr int   QL_EXPLORE_HOLD = 4;
 // Mesures RELATIVEMENT a la position du bras au debut de l'episode : ce qui
 // compte est de ne pas laisser un episode partir en vrille, pas la position
 // absolue (theta n'est pas observe, et le collecteur autorise tout).
-constexpr float QL_THETA_TURNS = 2.5f;    // tours max pendant un episode (0 = illimite)
+constexpr float QL_THETA_TURNS = 0.0f;    // collecteur tournant : illimite
 // Termine aussi l'episode si le bras s'emballe. Le moteur etant coupe ensuite,
 // le bras finit sur son elan, donc un seuil bas limite la roue libre.
 // /!\ NE PAS REDESCENDRE CE SEUIL. Il a valu 8 puis 14 rad/s, et les deux
@@ -314,7 +311,7 @@ constexpr float QL_R_BAL    = 20.0f;
 // Poids du shaping POTENTIEL sur l'energie (0 = desactive). Voir reward() dans
 // qlearning.cpp : sans lui l'agent se fige a l'horizontale, et les bonus de
 // sommet ci-dessus ne peuvent pas l'en sortir puisqu'il ne les echantillonne
-// jamais a 20 Hz (le pendule traverse +/-10 deg en ~9 ms en balistique).
+// jamais meme a 50 Hz (le pendule traverse +/-10 deg en ~9 ms en balistique).
 // /!\ Le terme DOIT rester sous forme POTENTIELLE : gamma*Phi(s') - Phi(s) avec
 // Phi = -QL_K_ENERGY*|E - eTop|/(2*eTop). Un simple bonus d'etat n'est pas
 // policy-invariant (Ng, Harada & Russell 1999) et l'agent l'accumule en RESTANT
@@ -322,23 +319,20 @@ constexpr float QL_R_BAL    = 20.0f;
 // pendule TOURNE indefiniment a E = eTop (7500 de recompense par episode, zero
 // equilibre). Sous forme de difference le terme se telescope a zero sur toute
 // trajectoire fermee : tourner en rond ne paie plus.
-constexpr float QL_K_ENERGY = 0.0f;
+constexpr float QL_K_ENERGY = 8.0f;
 // Shaping POTENTIEL d'approche du sommet. Contrairement au cône QL_K_BAL
 // (récompense de maintien), ce terme paie une TRANSITION vers un état haut et
 // lent : F = gamma*PhiApproche(s') - PhiApproche(s). Il guide donc le freinage
 // avant le rattrapage sans rendre rentable une orbite qui repasse sans cesse au
 // sommet, puisque le gain se télescope sur toute trajectoire fermée.
-constexpr float QL_K_APPROACH    = 0.0f;  // poids du potentiel (0 = désactivé)
+constexpr float QL_K_APPROACH    = 20.0f; // poids du potentiel
 constexpr float QL_APPROACH_ADOT = 8.0f;  // rad/s, échelle de vitesse pendule
 constexpr float QL_APPROACH_TDOT = 8.0f;  // rad/s, échelle de vitesse bras
-// Traces d'eligibilite, Watkins Q(lambda). 0 = Q-learning a un pas (historique).
-// Sans traces la valeur ne remonte que d'un etat par visite, ce qui explique le
-// plateau observe en simu (recompense figee apres ~200 episodes). Plage utile
-// d'apres la litterature : 0,4 a 0,8. Cout : un second tableau de la taille de
-// la Q-table (DMAMEM) + un balayage par pas RL.
-constexpr float QL_LAMBDA   = 0.0f;
+// Traces d'eligibilite de SARSA(lambda). Elles sont creuses, remplacantes et
+// bornees par QL_TRACE_MAX : aucun second tableau dense n'est alloue.
+constexpr float QL_LAMBDA   = 0.92f;
 
-// --- Tile coding (SIMULATION pour l'instant, cf. sim/tiles.py) ---
+// --- Tile coding partage firmware/simulation (cf. sim/tiles.py) ---
 // TC_TILINGS = 0 -> Q-table classique. Sinon, la fonction de valeur devient une
 // somme de poids sur TC_TILINGS quadrillages decales : deux etats voisins
 // partagent la plupart de leurs paves, donc apprendre sur l'un generalise a
@@ -346,8 +340,7 @@ constexpr float QL_LAMBDA   = 0.0f;
 // dimension theta_dot sans exploser le nombre d'echantillons necessaires (une
 // table, elle, traite chaque case comme independante — mesure : chaque ajout de
 // resolution RALENTISSAIT l'apprentissage).
-// Le format de sauvegarde diffère de celui de storage.cpp : un portage firmware
-// demanderait un nouveau QHeader.
+// Le format SPL1 est lu et ecrit a l'identique par storage.cpp.
 constexpr int   TC_TILINGS = 0;
 constexpr int   TC_N_ALPHA = 12;   // paves par quadrillage sur alpha (circulaire)
 constexpr int   TC_N_ADOT  = 12;   // sur alpha_dot
@@ -379,26 +372,26 @@ constexpr float TC_ALPHA_WARP = 1.0f;
 // actifs du meme agent SARSA. Les transitions a travers la frontiere sont
 // bootstrappees normalement.
 // Empreinte par defaut :
-//   global = 8 * 12 * (20+1) * (5+1) = 12 096 traits
-//   local  = 6 * (16+1) * (6+1) * (5+1) = 4 284 traits
-//   poids  = 16 380 * 7 actions * 4 octets = 448 kio.
+//   global = 8 * 12 * (18+1) * (5+1) = 10 944 traits
+//   local  = 8 * (16+1) * (6+1) * (5+1) = 5 712 traits
+//   poids  = 16 656 * 7 actions * 4 octets = 455,4 kio.
 constexpr int   TC_SPLIT             = 1;
 constexpr int   TC_GLOBAL_TILINGS    = 8;
 constexpr int   TC_GLOBAL_N_ALPHA    = 12;
-constexpr int   TC_GLOBAL_N_ADOT     = 20;
+constexpr int   TC_GLOBAL_N_ADOT     = 18;
 constexpr int   TC_GLOBAL_N_TDOT     = 5;
-constexpr float TC_GLOBAL_LR_SCALE   = 1.0f;
-constexpr int   TC_LOCAL_TILINGS     = 6;
+constexpr float TC_GLOBAL_LR_SCALE   = 0.333333f;
+constexpr int   TC_LOCAL_TILINGS     = 8;
 constexpr float TC_LOCAL_RAD         = 0.35f;
 constexpr float TC_LOCAL_ADOT_MAX    = 8.0f;
-constexpr float TC_LOCAL_TDOT_MAX    = 12.0f;
+constexpr float TC_LOCAL_TDOT_MAX    = 8.0f;
 constexpr int   TC_LOCAL_N_ALPHA     = 16;
 constexpr int   TC_LOCAL_N_ADOT      = 6;
 constexpr int   TC_LOCAL_N_TDOT      = 5;
 // Les visites pres du sommet sont rares pendant un entrainement qui part
 // toujours du bas. Ce multiplicateur permet a la banque locale d'apprendre plus
 // vite sans rendre agressives les mises a jour du swing-up.
-constexpr float TC_LOCAL_LR_SCALE    = 1.0f;
+constexpr float TC_LOCAL_LR_SCALE    = 2.0f;
 
 // 0 : gate dur, seule une banque est active. 1 : pres du sommet, la banque
 // locale apprend un residu par-dessus les traits globaux (memoire inchangee).
@@ -429,7 +422,7 @@ constexpr float QL_K_ADOT_TOP   = 0.06f;  // par (rad/s)
 // une récompense ; il ne rend pas une accélération continue franchement
 // mauvaise. Ce coût quadratique est local au sommet et ne gêne donc jamais le
 // pompage. 0 = comportement historique.
-constexpr float QL_K_TDOT_TOP   = 0.0f;   // par (rad/s)^2
+constexpr float QL_K_TDOT_TOP   = 0.10f;  // par (rad/s)^2
 constexpr float QL_TDOT_TOP_RAD = 0.35f;  // rad : zone locale du coût
 
 // Cone de recompense pres du haut : le GRADIENT qui manquait a l'equilibre.
@@ -455,16 +448,16 @@ constexpr float QL_TDOT_TOP_RAD = 0.35f;  // rad : zone locale du coût
 // pendule en permanence. La cible est donc systematiquement optimiste et l'agent
 // n'apprend jamais que SA conduite perd. SARSA apprend la valeur de la politique
 // suivie, exploration comprise — c'est le cas d'ecole du "cliff walking".
-constexpr float QL_SARSA = 0.0f;
+constexpr float QL_SARSA = 1.0f;
 
-constexpr float QL_EXPLORE_NEAR_RAD = 0.0f;  // rad : |alpha| sous lequel on raccourcit
+constexpr float QL_EXPLORE_NEAR_RAD = 0.35f; // rad : zone locale
 constexpr int   QL_EXPLORE_HOLD_TOP = 1;     // pas RL de rafale pres du haut
 // Plafond d'epsilon dans cette même zone. À epsilon=0,02 et 200 Hz, quatre
 // actions aléatoires par seconde empêchent l'agent de vivre une tenue longue,
 // donc SARSA n'a aucun retour stable à propager. Valeur < 0 : désactivé.
-constexpr float QL_EXPLORE_EPS_TOP  = -1.0f;
+constexpr float QL_EXPLORE_EPS_TOP  = 0.30f; // repli si QL_EPS_TOP0 < 0
 
-constexpr float QL_K_BAL        = 0.0f;   // 0 = desactive
+constexpr float QL_K_BAL        = 10.0f;
 constexpr float QL_BAL_CONE_RAD  = 0.25f; // rad : demi-largeur du cone
 constexpr float QL_BAL_CONE_ADOT = 3.0f;  // rad/s : idem sur la vitesse
 // Le bras doit lui aussi ralentir avant le rattrapage. Sans ce terme, deux

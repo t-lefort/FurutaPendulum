@@ -40,7 +40,7 @@ vertical** (`ARM_ENC_RATIO` dans `config.h`).
 
 - **Classic** : Swing-up, Balance seul
 - **Q-Learning** : Entrainer, Greedy, Sauver/Charger/Reset table
-  (fonctionne **sans carte SD** — la Q-table vit en RAM, mais elle est alors
+  (fonctionne **sans carte SD** — les poids vivent en RAM, mais ils sont alors
   perdue au reboot et aucun log n'est écrit)
 - **Debug** : Angles live (angles + counts bruts, moteur coupé),
   Test moteur auto, Jog manuel, **Openloop** (fait tourner le moteur *sans
@@ -86,10 +86,14 @@ Résumé :
 5. **Classic** : si le pendule s'amortit au lieu de monter, **inverser le signe
    de `Ke_swing`**. Depuis le repos exact en bas, une impulsion d'amorçage
    (`SWING_KICK_*`) démarre le mouvement : la loi d'énergie seule vaudrait 0.
-6. **QL → Entrainer** : épisodes de 15 s, logs CSV dans `/logs/`, Q-table
-   auto-sauvée (`/q_current.bin`, `/q_best.bin`). Les 7 actions sont des
-   **couples** appliqués directement au moteur (±`QL_U_MAX`), sans boucle de
-   vitesse intermédiaire à régler.
+6. **QL → Entrainer** : SARSA(λ) à 50 Hz, épisodes de 15 s prolongeables après
+   une première arrivée en haut, logs CSV dans `/logs/`, poids auto-sauvés
+   (`/q_current.bin`, `/q_best.bin`). Les 7 actions sont des **couples**
+   appliqués directement au moteur (±`QL_U_MAX`), sans boucle de vitesse
+   intermédiaire à régler. Les fichiers de poids utilisent le format compact
+   `SPL1` du simulateur : une politique `sim` compatible peut être copiée telle
+   quelle sous `/q_current.bin`. `/q_state.bin` conserve séparément epsilon,
+   le learning rate et le numéro d'épisode pour reprendre un entraînement.
 
 ## Sécurité
 
@@ -152,9 +156,8 @@ Trop fort → le bras « chasse » (colle / décolle / dépasse) : réduire.
   commutation dans son propre timer ; mode open-loop pour les tests au banc
 - `safety.*` — survitesses, plage bras, saturation
 - `control_classic.*` — swing-up énergie + retour d'état, commutation auto
-- `qlearning.*` — Q-table 49×31×7 (float, DMAMEM), ε-greedy, épisodes ; entre
-  deux épisodes : **moteur coupé** le temps que tout s'immobilise, puis θ
-  re-zéroté (offset logiciel) — pas de retour actif du bras : θ n'est pas
-  observé par l'agent et le collecteur tournant autorise toute position
-- `storage.*` — Q-table binaire + logs CSV sur microSD (optionnelle)
+- `qlearning.*` — SARSA(λ), tile coding 3D global/local, exploration globale et
+  locale, 455,4 Kio de poids en DMAMEM ; entre deux épisodes : **moteur coupé**
+  le temps que tout s'immobilise, puis θ re-zéroté (offset logiciel)
+- `storage.*` — poids `SPL1`, état de reprise et logs CSV sur microSD
 - `ui.*` — écran GC9A01 + encodeur KY-040 (menu, écrans live, fautes, réglages)

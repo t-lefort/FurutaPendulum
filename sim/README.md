@@ -42,11 +42,10 @@ python -m sim.train --episodes 400 --plot runs/base.png
 python -m sim.train --episodes 400 --save-q runs/q.bin
 ```
 
-Avec la Q-table classique, `--save-q` écrit le format binaire actuel du firmware
-(même en-tête que `storage.cpp`) : il peut être copié sous `/q_current.bin` sur
-la microSD. Le tile coding, y compris sa variante factorisée compacte, possède
-son propre format : il faudra d'abord porter cette représentation dans
-`qlearning.cpp` et ajouter un nouvel en-tête dans `storage.cpp`.
+Avec `TC_SPLIT=1`, `--save-q` écrit le format `SPL1` lu directement par le
+firmware : le fichier peut être copié sous `/q_current.bin` sur la microSD.
+Le sidecar `/q_state.bin` est propre à un entraînement déjà commencé sur la
+Teensy ; son absence est normale pour une politique issue de la simulation.
 
 ### Balayage de paramètres
 
@@ -104,11 +103,10 @@ traits sans hachage :
 
 Il s'agit toujours d'un seul agent SARSA, d'un seul jeu d'actions et d'une seule
 mise à jour temporelle. Il n'y a ni contrôleur classique, ni bascule entre deux
-politiques. Avec les dimensions de `config.h`, les 16 380 traits et 7 actions
-occupent 458 640 octets, soit 447,9 Kio de poids au lieu de 4,64 Mio pour le
-pavage dense de référence. Un tampon borné de 512 traces ajoute environ 4 Kio
-et laisse près de 60 Kio de RAM2 ; cette marge devra être confirmée par le
-rapport d'édition de liens du firmware après le portage.
+politiques. Avec le profil robuste de `config.h`, les 16 656 traits et 7 actions
+occupent 466 368 octets, soit 455,4 Kio de poids. Le tampon borné de 512 traces
+ajoute 4 Kio en RAM1. La compilation Teensy 4.1 laisse 45 504 octets libres en
+RAM2 et plus de 370 Kio disponibles pour les variables locales en RAM1.
 
 Profil compact ayant appris depuis le bas, sans curriculum :
 
@@ -121,9 +119,8 @@ Sur la graine 1, le probe glouton à 3 000 épisodes atteint 100 % de swing-up e
 1,70 s de tenue médiane. Une réévaluation indépendante sur 30 épisodes donne
 30/30 swing-ups, 25/30 tenues d'au moins une seconde, une médiane de 1,95 s et
 un maximum de 7,6 s. Le fichier obtenu est
-`runs/q_split_long_s1.bin` ; malgré un ancien message final trompeur dans son
-journal, son magic `SPL1` et sa taille de 458 660 octets confirment qu'il s'agit
-bien du format compact, **pas** du format `storage.cpp` actuel.
+`runs/q_split_long_s1.bin` ; son ancien format compact n'a pas les dimensions
+du profil robuste actuel et est donc correctement refusé par le firmware.
 
 La convergence reste variable à pas constant. Les paramètres
 `QL_LR_DECAY`/`QL_LR_MIN` et `QL_EXPLORE_EPS_TOP` servent aux campagnes de
@@ -147,7 +144,7 @@ laisse à l'action demandée le temps d'être réellement appliquée.
 python -m sim.train --episodes 3000 --seed 1 --eval-every 200 \
   --stop-when 20 --save-best-q runs/q_compact_best.bin \
   --save-q runs/q_compact_final.bin \
-  --set QL_AFTER_UP_FALL_RAD=0.52,QL_AFTER_UP_ARM_S=1,QL_SARSA=1,QL_K_ENERGY=8,QL_K_APPROACH=20,QL_K_TDOT_TOP=0.1,QL_TDOT_TOP_RAD=0.35,QL_U_MIN=0.25,RL_DIVIDER=20,QL_GAMMA=0.995,QL_U_TAU=0.002,DUTY_SLEW_PER_S=80,QL_LAMBDA=0.92,QL_LR=0.03,QL_LR_DECAY=0.9995,QL_LR_MIN=0.0005,QL_EPS0=0.30,QL_EPS_MIN=0.001,QL_EPS_DECAY=0.998,QL_EPS_TOP0=0.10,QL_EPS_TOP_MIN=0.001,QL_EPS_TOP_DECAY=0.9995,QL_THETA_TURNS=0,THETA_TURNS_MAX=0,QL_K_BAL=10,QL_BAL_CONE_TDOT=8,QL_EXPLORE_HOLD=6,QL_EXPLORE_NEAR_RAD=0.35,QL_EXPLORE_HOLD_TOP=1,QL_EXPLORE_EPS_TOP=0.30,QL_FIRST_UP_RAD=0.175,QL_FIRST_UP_BONUS_S=30,TC_SPLIT=1,TC_SPLIT_OVERLAP=0,TC_GLOBAL_TILINGS=8,TC_GLOBAL_N_ADOT=18,TC_GLOBAL_LR_SCALE=0.333333,TC_LOCAL_TILINGS=8,TC_LOCAL_TDOT_MAX=8,TC_LOCAL_LR_SCALE=2
+  --set QL_AFTER_UP_FALL_RAD=0.52,QL_AFTER_UP_ARM_S=1,QL_SARSA=1,QL_K_ENERGY=8,QL_K_APPROACH=20,QL_K_TDOT_TOP=0.1,QL_TDOT_TOP_RAD=0.35,QL_U_MIN=0.25,RL_DIVIDER=20,QL_GAMMA=0.995,QL_U_TAU=0.002,QL_DUTY_SLEW_PER_S=80,QL_LAMBDA=0.92,QL_LR=0.03,QL_LR_DECAY=0.9995,QL_LR_MIN=0.0005,QL_EPS0=0.30,QL_EPS_MIN=0.001,QL_EPS_DECAY=0.998,QL_EPS_TOP0=0.10,QL_EPS_TOP_MIN=0.001,QL_EPS_TOP_DECAY=0.9995,QL_THETA_TURNS=0,THETA_TURNS_MAX=0,QL_K_BAL=10,QL_BAL_CONE_TDOT=8,QL_EXPLORE_HOLD=6,QL_EXPLORE_NEAR_RAD=0.35,QL_EXPLORE_HOLD_TOP=1,QL_EXPLORE_EPS_TOP=0.30,QL_FIRST_UP_RAD=0.175,QL_FIRST_UP_BONUS_S=30,TC_SPLIT=1,TC_SPLIT_OVERLAP=0,TC_GLOBAL_TILINGS=8,TC_GLOBAL_N_ADOT=18,TC_GLOBAL_LR_SCALE=0.333333,TC_LOCAL_TILINGS=8,TC_LOCAL_TDOT_MAX=8,TC_LOCAL_LR_SCALE=2
 ```
 
 La correction décisive est `QL_AFTER_UP_ARM_S=1`. Avant la première tenue
@@ -246,16 +243,12 @@ extrémité, une approximation raisonnable est :
 - centre de masse : `0.075 m` sous le pivot ;
 - inertie au pivot : `1.07e-4 kg.m²`.
 
-La formule est `J = m_tige L²/3 + m_vis L²`. Cette estimation donne une
-fréquence propre de 1,67 Hz, très proche des 1,59 Hz du modèle effectif actuel,
-mais cinq fois moins de masse. Les valeurs actuelles de `config.h` sont
-manifestement des paramètres effectifs associés au réglage classique validé au
-banc ; elles ne sont donc pas remplacées silencieusement. Avant le portage RL,
-il faudra soit adopter l'approximation ci-dessus et recaler le gain d'énergie,
-soit conserver le modèle effectif après une comparaison simple de la période
-libre et du swing-up classique.
+La formule est `J = m_tige L²/3 + m_vis L²`. Le firmware SARSA utilise cette
+approximation compilée pour rester identique au profil simulé. Le contrôle
+classique continue, lui, d'utiliser ses paramètres runtime persistés en EEPROM :
+son réglage validé au banc n'est donc pas écrasé par le portage RL.
 
-Le modèle approché s'active sans toucher aux défauts validés au banc :
+Le même modèle peut être forcé explicitement en simulation :
 
 ```bash
 python -m sim.train --check \

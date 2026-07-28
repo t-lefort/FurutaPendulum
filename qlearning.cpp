@@ -1,294 +1,522 @@
 #include "qlearning.h"
-#include "encoders.h"   // rezeroArm() au debut de chaque episode
-#include "settings.h"   // qlUMin / qlUMax : bornes du jeu d'actions
+#include "encoders.h"
+#include "settings.h"
+#include <math.h>
+#include <string.h>
+
 using Settings::cfg;
 
-// Table dans la RAM2 (DMAMEM) : 49*41*7 floats = ~56 kB, laisse la RAM1 au code
-DMAMEM static float Q[QL_N_ALPHA * QL_N_ADOT * QL_N_ACT];
+namespace {
+constexpr int ACT_NEUTRAL = QL_N_ACT / 2;
+constexpr int QL_N_LVL = ACT_NEUTRAL;
+constexpr uint8_t MAX_ACTIVE =
+    (TC_GLOBAL_TILINGS > TC_LOCAL_TILINGS)
+        ? TC_GLOBAL_TILINGS : TC_LOCAL_TILINGS;
 
-static QLearning::Stats st;
-static bool  greedyMode = false;
-static int   prevStateIdx = -1;
-static int   prevAction   = 0;
-static float stepsInEpisode = 0;
-// Pause entre deux episodes : moteur coupe, on attend que tout s'immobilise
-// pour que chaque episode reparte du meme etat (pendule en bas, au repos).
-static bool  paused    = false;
-static float pauseTime = 0.0f;
-// Exploration persistante : pas restants sur l'action aleatoire en cours.
-static int   exploreHold  = 0;
-static int   exploreAct   = 0;
+// Les 455,4 Kio de poids occupent la RAM2. Les 4 Kio de traces, tres souvent
+// parcourus dans l'ISR, restent en RAM1 rapide ou la marge est confortable.
+DMAMEM static float weights[QLearning::WEIGHT_COUNT];
 
-// En cas d'EGALITE (typiquement une table vierge, tout a zero), on doit
-// retomber sur l'action NEUTRE (couple nul) et non sur l'indice 0, qui vaut
-// -u_max : sinon un agent non entraine applique le couple maxi dans un sens en
-// permanence et le bras part en toupie jusqu'a la faute "plage bras".
-static constexpr int ACT_NEUTRAL = QL_N_ACT / 2;   // action de couple nul
-static constexpr int QL_N_LVL    = ACT_NEUTRAL;    // niveaux non nuls par sens
+struct Trace {
+  uint32_t key;   // feature * QL_N_ACT + action
+  float value;
+};
+static Trace traces[QL_TRACE_MAX];
 
-// Actions = couples normalises appliques DIRECTEMENT au moteur.
-// Les niveaux non nuls sont repartis sur [uMin, uMax] et non sur [0, uMax] :
-// sous le seuil de decollement du train d'engrenages, une action ne produit
-// AUCUN mouvement. Reparties depuis 0, les petites actions etaient des
-// "ne rien faire" facturees au prix du malus |u| -> l'agent n'avait en pratique
-// que 4 actions distinctes sur 7, et l'exploration en gaspillait 29 %.
-// Bornes runtime (menu Reglages : QL_Umin / QL_Umax), le seuil se mesure.
-static inline float actionU(int a) {
-  const int k = a - ACT_NEUTRAL;                  // -QL_N_LVL .. +QL_N_LVL
+static_assert(TC_SPLIT == 1, "Le firmware utilise la representation split SPL1");
+static_assert(TC_SPLIT_OVERLAP == 0,
+              "Le profil valide utilise un gate dur sans chevauchement");
+static_assert(QL_N_ACT == 7, "Le format de politique valide utilise 7 actions");
+static_assert(MAX_ACTIVE <= 16, "Augmenter la taille des tableaux de traits");
+static_assert(QLearning::WEIGHT_BYTES <= 512u * 1024u,
+              "Les poids depassent les 512 Kio de RAM2");
+
+QLearning::Stats st;
+bool greedyMode = false;
+bool paused = false;
+float pauseTime = 0.0f;
+float stepsInEpisode = 0.0f;
+float episodeLimitS = QL_EPISODE_S;
+
+uint32_t prevFeatures[MAX_ACTIVE];
+uint8_t prevFeatureCount = 0;
+int prevAction = ACT_NEUTRAL;
+float prevPhi = 0.0f;
+
+uint16_t traceCount = 0;
+int exploreHold = 0;
+int exploreAct = ACT_NEUTRAL;
+float kickTime = 0.0f;
+bool firstUpSeen = false;
+bool afterUpArmed = false;
+float upHoldTime = 0.0f;
+
+static inline float actionU(int action) {
+  const int k = action - ACT_NEUTRAL;
   if (k == 0) return 0.0f;
   const float uMin = cfg.qlUMin;
-  const float uMax = max(cfg.qlUMax, uMin);
-  const float t = (QL_N_LVL > 1) ? (float)(abs(k) - 1) / (float)(QL_N_LVL - 1)
-                                 : 1.0f;          // 0, 0.5, 1 pour 3 niveaux
+  const float uMax = fmaxf(cfg.qlUMax, uMin);
+  const float t = (QL_N_LVL > 1)
+      ? (float)(abs(k) - 1) / (float)(QL_N_LVL - 1) : 1.0f;
   const float u = uMin + t * (uMax - uMin);
   return (k > 0) ? u : -u;
 }
 
-static inline int binAlpha(float a) {
-  // alpha dans [-pi, pi] -> [0, N-1]
-  int b = (int)((a + PI) / TWO_PI * QL_N_ALPHA);
-  return constrain(b, 0, QL_N_ALPHA - 1);
-}
-static inline int binAdot(float w) {
-  w = constrain(w, -QL_ADOT_MAX, QL_ADOT_MAX);
-  int b = (int)((w + QL_ADOT_MAX) / (2.0f * QL_ADOT_MAX) * QL_N_ADOT);
-  return constrain(b, 0, QL_N_ADOT - 1);
-}
-static inline int stateIndex(const PendulumState &s) {
-  return (binAlpha(s.alpha) * QL_N_ADOT + binAdot(s.alphaDot)) * QL_N_ACT;
+static inline int tileCoordinate(float x, float lo, float hi, int n,
+                                 bool wrap, int dimension, int tiling,
+                                 int tilingCount) {
+  const float width = (hi - lo) / (float)n;
+  const float offset = width *
+      (float)(((2 * dimension + 1) * tiling) % tilingCount) /
+      (float)tilingCount;
+  int c = (int)floorf((x + offset - lo) / width);
+  if (wrap) {
+    c %= n;
+    if (c < 0) c += n;
+  } else {
+    if (c < 0) c = 0;
+    if (c > n) c = n;
+  }
+  return c;
 }
 
-static inline int bestAction(int sIdx) {
-  int best = ACT_NEUTRAL; float bv = Q[sIdx + ACT_NEUTRAL];
-  for (int a = 0; a < QL_N_ACT; a++)
-    if (Q[sIdx + a] > bv) { bv = Q[sIdx + a]; best = a; }
+static uint8_t activeFeatures(const PendulumState &s, uint32_t *out) {
+  if (fabsf(s.alpha) < TC_LOCAL_RAD) {
+    for (int t = 0; t < TC_LOCAL_TILINGS; ++t) {
+      const int ca = tileCoordinate(
+          s.alpha, -TC_LOCAL_RAD, TC_LOCAL_RAD, TC_LOCAL_N_ALPHA,
+          false, 0, t, TC_LOCAL_TILINGS);
+      const int cw = tileCoordinate(
+          s.alphaDot, -TC_LOCAL_ADOT_MAX, TC_LOCAL_ADOT_MAX, TC_LOCAL_N_ADOT,
+          false, 1, t, TC_LOCAL_TILINGS);
+      const int ct = tileCoordinate(
+          s.thetaDot, -TC_LOCAL_TDOT_MAX, TC_LOCAL_TDOT_MAX, TC_LOCAL_N_TDOT,
+          false, 2, t, TC_LOCAL_TILINGS);
+      const uint32_t idx =
+          ((uint32_t)ca * (TC_LOCAL_N_ADOT + 1) + (uint32_t)cw) *
+          (TC_LOCAL_N_TDOT + 1) + (uint32_t)ct;
+      out[t] = QLearning::GLOBAL_FEATURES +
+               (uint32_t)t * QLearning::LOCAL_PER_TILING + idx;
+    }
+    return TC_LOCAL_TILINGS;
+  }
+
+  for (int t = 0; t < TC_GLOBAL_TILINGS; ++t) {
+    const int ca = tileCoordinate(
+        s.alpha, -(float)PI, (float)PI, TC_GLOBAL_N_ALPHA,
+        true, 0, t, TC_GLOBAL_TILINGS);
+    const int cw = tileCoordinate(
+        s.alphaDot, -QL_ADOT_MAX, QL_ADOT_MAX, TC_GLOBAL_N_ADOT,
+        false, 1, t, TC_GLOBAL_TILINGS);
+    const int ct = tileCoordinate(
+        s.thetaDot, -QL_TDOT_BIN_MAX, QL_TDOT_BIN_MAX, TC_GLOBAL_N_TDOT,
+        false, 2, t, TC_GLOBAL_TILINGS);
+    const uint32_t idx =
+        ((uint32_t)ca * (TC_GLOBAL_N_ADOT + 1) + (uint32_t)cw) *
+        (TC_GLOBAL_N_TDOT + 1) + (uint32_t)ct;
+    out[t] = (uint32_t)t * QLearning::GLOBAL_PER_TILING + idx;
+  }
+  return TC_GLOBAL_TILINGS;
+}
+
+static inline float qValue(const uint32_t *features, uint8_t count, int action) {
+  float q = 0.0f;
+  for (uint8_t i = 0; i < count; ++i)
+    q += weights[features[i] * QL_N_ACT + action];
+  return q;
+}
+
+static int bestAction(const uint32_t *features, uint8_t count) {
+  int best = ACT_NEUTRAL;
+  float bestValue = qValue(features, count, best);
+  for (int action = 0; action < QL_N_ACT; ++action) {
+    if (action == ACT_NEUTRAL) continue;
+    const float value = qValue(features, count, action);
+    if (value > bestValue) {
+      bestValue = value;
+      best = action;
+    }
+  }
   return best;
 }
-static inline float maxQ(int sIdx) {
-  float bv = Q[sIdx];
-  for (int a = 1; a < QL_N_ACT; a++) if (Q[sIdx + a] > bv) bv = Q[sIdx + a];
-  return bv;
+
+static inline float featureRate(uint32_t feature) {
+  if (feature >= QLearning::GLOBAL_FEATURES)
+    return st.learningRate * TC_LOCAL_LR_SCALE / (float)TC_LOCAL_TILINGS;
+  return st.learningRate * TC_GLOBAL_LR_SCALE / (float)TC_GLOBAL_TILINGS;
 }
 
-static float reward(const PendulumState &s, int action) {
-  // --- Base POSITIVE : 0 en bas, +2 en haut. ---
-  // Elle valait 2*cos(alpha), donc -2 en bas. Deux consequences fatales :
-  //  1) "ne rien faire" etait l'action la MOINS chere de toutes (tous les autres
-  //     termes sont des malus, nuls a l'arret) -> optimum local parfait, l'agent
-  //     se fige en bas. C'est le comportement observe en entrainement.
-  //  2) V(rester en bas) = -2/(1-gamma) = -400, alors que l'etat terminal vaut
-  //     r + QL_R_OUT_RANGE = -52 SANS bootstrap : terminer l'episode etait
-  //     MEILLEUR que survivre. La penalite terminale recompensait le suicide.
-  // Avec r >= 0, l'immobilite vaut 0, toute montee du pendule paie, et la
-  // penalite terminale est enfin une penalite.
+static void removeFeatureTraces(uint32_t feature) {
+  uint16_t dst = 0;
+  for (uint16_t src = 0; src < traceCount; ++src) {
+    if (traces[src].key / QL_N_ACT != feature)
+      traces[dst++] = traces[src];
+  }
+  traceCount = dst;
+}
+
+static void updateWeights(const uint32_t *features, uint8_t count, int action,
+                          float delta, bool terminal) {
+  if (QL_LAMBDA <= 0.0f) {
+    for (uint8_t i = 0; i < count; ++i) {
+      const uint32_t key = features[i] * QL_N_ACT + action;
+      weights[key] += featureRate(features[i]) * delta;
+    }
+    return;
+  }
+
+  // Traces remplacantes : une seule action reste eligible par trait actif.
+  for (uint8_t i = 0; i < count; ++i)
+    removeFeatureTraces(features[i]);
+
+  const uint16_t overflow =
+      (traceCount + count > QL_TRACE_MAX)
+          ? (uint16_t)(traceCount + count - QL_TRACE_MAX) : 0;
+  if (overflow > 0) {
+    memmove(traces, traces + overflow,
+            (traceCount - overflow) * sizeof(Trace));
+    traceCount -= overflow;
+  }
+  for (uint8_t i = 0; i < count; ++i) {
+    traces[traceCount++] = {
+        features[i] * QL_N_ACT + (uint32_t)action, 1.0f};
+  }
+
+  const float decay = QL_GAMMA * QL_LAMBDA;
+  uint16_t dst = 0;
+  for (uint16_t src = 0; src < traceCount; ++src) {
+    Trace tr = traces[src];
+    const uint32_t feature = tr.key / QL_N_ACT;
+    weights[tr.key] += featureRate(feature) * delta * tr.value;
+    tr.value *= decay;
+    if (tr.value >= QL_TRACE_MIN)
+      traces[dst++] = tr;
+  }
+  traceCount = terminal ? 0 : dst;
+}
+
+static float stateReward(const PendulumState &s, int action) {
   float r = 1.0f + cosf(s.alpha);
+  if (fabsf(s.alpha) < QL_ADOT_TOP_RAD)
+    r -= QL_K_ADOT_TOP * fabsf(s.alphaDot);
+  if (fabsf(s.alpha) < QL_TDOT_TOP_RAD)
+    r -= QL_K_TDOT_TOP * s.thetaDot * s.thetaDot;
 
-  // --- Vitesse du pendule : penalisee UNIQUEMENT pres du haut ---
-  // Un swing-up exige de passer au point bas a ~sqrt(4*m*g*lcom/J) rad/s
-  // (~27 rad/s ici). Un malus permanent sur |alpha_dot| punissait donc l'agent
-  // exactement au moment ou il fait la bonne chose : c'est l'energie meme dont
-  // il a besoin. Pres du haut au contraire, arriver lentement est ce qu'on veut
-  // (et cela empeche de "farmer" le bonus en traversant la verticale a fond).
-  // /!\ Ce terme est le SEUL qui distingue "arrete en haut" de "traverse le haut
-  // a pleine vitesse". Avec QL_K_ENERGY actif il doit etre du meme ordre, sinon
-  // l'agent maximise l'energie en faisant TOURNER le pendule en continu (mesure
-  // sim : E = eTop est satisfait aussi bien en rotation qu'a l'arret au sommet).
-  if (fabsf(s.alpha) < QL_ADOT_TOP_RAD) r -= QL_K_ADOT_TOP * fabsf(s.alphaDot);
-
-  // Cone de recompense pres du haut (cf. QL_K_BAL dans config.h) : sans lui la
-  // recompense est PLATE dans la zone d'equilibre et rien ne guide le rattrapage.
   if (QL_K_BAL > 0.0f) {
     const float ar = s.alpha / QL_BAL_CONE_RAD;
-    const float wr = s.alphaDot / QL_BAL_CONE_ADOT;
-    r += QL_K_BAL * max(0.0f, 1.0f - ar * ar - wr * wr);
+    const float wr = s.alphaDot / fmaxf(QL_BAL_CONE_ADOT, 1e-6f);
+    const float cone = fmaxf(0.0f, 1.0f - ar * ar - wr * wr);
+    const float taper = (QL_BAL_CONE_TDOT > 0.0f)
+        ? fmaxf(0.0f, 1.0f -
+            (s.thetaDot / QL_BAL_CONE_TDOT) *
+            (s.thetaDot / QL_BAL_CONE_TDOT))
+        : 1.0f;
+    r += QL_K_BAL * cone * taper;
   }
 
-  // --- Vitesse du bras : barriere douce seulement ---
-  // theta_dot n'est PAS dans l'etat ([alpha, alpha_dot]) : un malus permanent
-  // est inattribuable par l'agent, c'est un biais vers l'immobilite qu'il ne
-  // peut pas apprendre a eviter. On ne penalise donc que l'approche de la
-  // limite d'episode, ou le lien action -> penalite est net.
   const float tdOver = fabsf(s.thetaDot) - QL_TDOT_SOFT;
   if (tdOver > 0.0f) r -= QL_K_TDOT * tdOver;
-
-  // --- Proximite ENERGETIQUE du sommet (terme DENSE) ---
-  // Sans ce terme l'agent plafonne dans un optimum local tres net, mesure en
-  // simulation : il pompe le pendule jusqu'a ~l'horizontale et s'y maintient.
-  // Raison : 1+cos(alpha) recompense la HAUTEUR, pas l'ENERGIE. Se maintenir a
-  // l'horizontale rapporte ~1,0 par pas indefiniment, alors qu'un vrai swing-up
-  // impose de repasser par le bas (ou 1+cos = 0) pour accumuler de la vitesse.
-  // Les bonus de sommet ne corrigent rien : a 20 Hz le pendule traverse la zone
-  // +/-10 deg en ~9 ms quand il passe balistiquement, donc l'agent ne les
-  // ECHANTILLONNE jamais — mesure : QL_R_BAL de 20 a 600 ne change RIEN, les
-  // trajectoires restent identiques. Une recompense jamais percue n'a pas de
-  // gradient. Il faut donc un terme dense, toujours vu, qui paie l'energie.
-  // E = 1/2*J*alpha_dot^2 + m*g*lcom*cos(alpha), nulle en bas, eTop() en haut.
-  // QL_K_ENERGY = 0 desactive le terme (comportement d'avant).
-  if (QL_K_ENERGY > 0.0f) {
-    const float eTop = max(cfg.eTop(), 1e-6f);
-    const float e = 0.5f * cfg.pendJ() * s.alphaDot * s.alphaDot
-                    + eTop * cosf(s.alpha);
-    // Ecart relatif a l'energie du sommet, borne : reste POSITIF (cf. invariant
-    // "base non negative") et sature au lieu de creuser un puits negatif.
-    const float gap = fabsf(e - eTop) / (2.0f * eTop);
-    r += QL_K_ENERGY * max(0.0f, 1.0f - gap);
-  }
-
-  // Cout de l'effort, faible : il doit departager, pas dominer.
-  const float uMaxNow = max(cfg.qlUMax, 1e-3f);
-  r -= 0.02f * fabsf(actionU(action)) / uMaxNow;
-
-  // Les bonus "pendule en haut" exigent un bras LENT. Sans cette condition, un
-  // bras qui tourne a fond maintient le pendule releve par effet centrifuge et
-  // touche les bonus sans jamais equilibrer : c'est un optimum local tres
-  // attractif dont l'agent ne ressort plus. NE PAS SUPPRIMER CE GATING.
-  // /!\ Mais le seuil doit rester ATTEIGNABLE : a l'instant ou le pendule arrive
-  // en haut, le bras tourne encore (mesure sim sur le swing-up classique :
-  // 6 a 8 rad/s a l'arrivee). Avec un gate a 3 rad/s l'agent ne touchait JAMAIS
-  // le bonus au moment de l'arrivee -> rien ne lui signalait que monter est bien,
-  // et le swing-up ne s'apprenait pas. Regler par QL_UP_TDOT / QL_BAL_TDOT.
-  if (fabsf(s.alpha) < QL_UP_RAD  && fabsf(s.thetaDot) < QL_UP_TDOT)  r += QL_R_UP;
-  if (fabsf(s.alpha) < QL_BAL_RAD && fabsf(s.alphaDot) < QL_BAL_ADOT
-                                  && fabsf(s.thetaDot) < QL_BAL_TDOT) r += QL_R_BAL;
+  r -= 0.02f * fabsf(actionU(action)) / fmaxf(cfg.qlUMax, 1e-3f);
+  if (fabsf(s.alpha) < QL_UP_RAD && fabsf(s.thetaDot) < QL_UP_TDOT)
+    r += QL_R_UP;
+  if (fabsf(s.alpha) < QL_BAL_RAD &&
+      fabsf(s.alphaDot) < QL_BAL_ADOT &&
+      fabsf(s.thetaDot) < QL_BAL_TDOT)
+    r += QL_R_BAL;
   return r;
 }
 
+static float potential(const PendulumState &s) {
+  float phi = 0.0f;
+  if (QL_K_ENERGY > 0.0f) {
+    // Le RL reste aligne sur le modele valide en simulation, sans ecraser les
+    // anciens parametres EEPROM dont depend le controle classique.
+    const float pendJ = PEND_J_ROD_BOB
+        ? PEND_MASS * PEND_LEN * (4.0f * PEND_LCOM - PEND_LEN) / 3.0f
+        : PEND_MASS * PEND_LEN * PEND_LEN / 3.0f;
+    const float eTop = fmaxf(PEND_MASS * G_GRAV * PEND_LCOM, 1e-6f);
+    const float e = 0.5f * pendJ * s.alphaDot * s.alphaDot +
+                    eTop * cosf(s.alpha);
+    phi -= QL_K_ENERGY * fabsf(e - eTop) / (2.0f * eTop);
+  }
+  if (QL_K_APPROACH > 0.0f) {
+    const float height = 0.5f * (1.0f + cosf(s.alpha));
+    const float wa = s.alphaDot / fmaxf(QL_APPROACH_ADOT, 1e-6f);
+    const float wt = s.thetaDot / fmaxf(QL_APPROACH_TDOT, 1e-6f);
+    phi += QL_K_APPROACH * height / (1.0f + wa * wa + wt * wt);
+  }
+  return phi;
+}
+
+static void noteFirstUp(float alpha) {
+  if (fabsf(alpha) >= QL_FIRST_UP_RAD) {
+    upHoldTime = 0.0f;
+    return;
+  }
+  upHoldTime += RL_DT;
+  if (upHoldTime >= QL_AFTER_UP_ARM_S)
+    afterUpArmed = true;
+  if (!firstUpSeen && stepsInEpisode > 0.0f) {
+    firstUpSeen = true;
+    episodeLimitS += QL_FIRST_UP_BONUS_S;
+  }
+}
+
+static bool terminalCheck(const PendulumState &s, float &penalty) {
+  penalty = 0.0f;
+  if (stepsInEpisode <= 0.0f) return false;
+  if (QL_AFTER_UP_FALL_RAD > 0.0f && afterUpArmed &&
+      fabsf(s.alpha) > QL_AFTER_UP_FALL_RAD)
+    return true;
+  if ((QL_THETA_TURNS > 0.0f &&
+       fabsf(s.theta) > QL_THETA_TURNS * (float)TWO_PI) ||
+      (QL_TDOT_MAX > 0.0f && fabsf(s.thetaDot) > QL_TDOT_MAX)) {
+    penalty = QL_R_OUT_RANGE;
+    return true;
+  }
+  return false;
+}
+
+static int kickAction(float alpha, float alphaDot) {
+  if (QL_KICK <= 0.0f) return -1;
+  if (fabsf(alphaDot) < SWING_KICK_ADOT &&
+      fabsf(alpha) > (float)PI - SWING_KICK_RAD) {
+    kickTime += RL_DT;
+    const float period = 2.0f * SWING_KICK_HALF_S;
+    return fmodf(kickTime, period) < SWING_KICK_HALF_S
+        ? QL_N_ACT - 1 : 0;
+  }
+  kickTime = 0.0f;
+  return -1;
+}
+
+static int exploreHoldFor(float alpha) {
+  if (QL_EXPLORE_NEAR_RAD > 0.0f &&
+      fabsf(alpha) < QL_EXPLORE_NEAR_RAD)
+    return max(1, QL_EXPLORE_HOLD_TOP);
+  return max(1, QL_EXPLORE_HOLD);
+}
+
+static float explorationEpsilon(bool nearTop) {
+  if (!nearTop) return st.epsilon;
+  if (QL_EPS_TOP0 >= 0.0f) {
+    const float eps = st.epsilonTop;
+    if (!greedyMode) {
+      ++st.topExploreSteps;
+      st.epsilonTop =
+          fmaxf(QL_EPS_TOP_MIN, st.epsilonTop * QL_EPS_TOP_DECAY);
+    }
+    return eps;
+  }
+  return (QL_EXPLORE_EPS_TOP >= 0.0f)
+      ? fminf(st.epsilon, QL_EXPLORE_EPS_TOP) : st.epsilon;
+}
+
+static int selectAction(const uint32_t *features, uint8_t count,
+                        float alpha, float alphaDot) {
+  const int kick = kickAction(alpha, alphaDot);
+  if (kick >= 0) return kick;
+  if (greedyMode) return bestAction(features, count);
+
+  const bool nearTop = QL_EXPLORE_NEAR_RAD > 0.0f &&
+                       fabsf(alpha) < QL_EXPLORE_NEAR_RAD;
+  if (exploreHold > 0) {
+    if (nearTop) {
+      exploreHold = 0;
+    } else {
+      --exploreHold;
+      return exploreAct;
+    }
+  }
+
+  const float eps = explorationEpsilon(nearTop);
+  if ((float)random(10000) / 10000.0f < eps) {
+    exploreAct = (int)random(QL_N_ACT);
+    exploreHold = exploreHoldFor(alpha) - 1;
+    return exploreAct;
+  }
+  return bestAction(features, count);
+}
+
+static void beginPause() {
+  paused = true;
+  pauseTime = 0.0f;
+  exploreHold = 0;
+}
+} // namespace
+
 void QLearning::begin() {
   resetTable();
-  st = {};
-  st.epsilon = QL_EPS0;
-  st.bestReward = -1e9f;
+  resetTrainingState();
 }
 
 void QLearning::resetTable() {
-  for (size_t i = 0; i < tableCount(); i++) Q[i] = 0.0f;
+  memset(weights, 0, sizeof(weights));
+  traceCount = 0;
+  prevFeatureCount = 0;
+}
+
+void QLearning::resetTrainingState() {
+  st = {};
+  st.epsilon = QL_EPS0;
+  st.epsilonTop = QL_EPS_TOP0;
+  st.learningRate = QL_LR;
+  st.bestReward = -1e9f;
 }
 
 void QLearning::startSession(bool greedy) {
   greedyMode = greedy;
-  prevStateIdx = -1;
-  stepsInEpisode = 0;
+  if (!greedy)
+    randomSeed(micros() ^ (st.episode * 0x9E3779B1u));
+  prevFeatureCount = 0;
+  prevPhi = 0.0f;
+  traceCount = 0;
+  stepsInEpisode = 0.0f;
+  episodeLimitS = QL_EPISODE_S;
+  firstUpSeen = false;
+  afterUpArmed = false;
+  upHoldTime = 0.0f;
   st.episodeReward = 0.0f;
-  // On demarre PAR la pause : moteur coupe tant que le pendule n'est pas
-  // retombe immobile (l'utilisateur peut lancer le mode pendule en mouvement).
-  paused      = true;
-  pauseTime   = 0.0f;
-  exploreHold = 0;
-}
-
-// L'exploration persistante ne doit jamais enjamber une pause : le couple est
-// coupe pendant celle-ci, tenir l'action n'aurait aucun sens.
-static inline void beginPause() {
-  paused = true; pauseTime = 0.0f; exploreHold = 0;
+  beginPause();
 }
 
 float QLearning::step(const PendulumState &s, bool &newEpisode) {
   newEpisode = false;
 
-  // ---- Pause entre deux episodes (agent inhibe, moteur coupe par l'appelant) ----
-  // Pas de retour actif du bras : theta n'est pas observe par l'agent et le
-  // collecteur tournant autorise n'importe quelle position. On attend juste
-  // que tout s'immobilise, puis on RE-ZERO theta (offset logiciel) : chaque
-  // episode repart ainsi de theta = 0 sans qu'aucun couple ne soit pilote,
-  // et la derive ne peut pas s'accumuler vers TurnsMax d'episode en episode.
   if (paused) {
     pauseTime += RL_DT;
-    st.uCommand   = 0.0f;
+    st.uCommand = 0.0f;
     st.lastAction = 0;
-    const bool settled = fabsf(s.alpha)    > (float)PI - QL_SETTLE_RAD &&
-                         fabsf(s.alphaDot) < QL_SETTLE_ADOT &&
-                         fabsf(s.thetaDot) < QL_SETTLE_TDOT;
-    if (!settled && pauseTime <= QL_SETTLE_MAX_S) return 0.0f;
-    // Pret (ou delai ecoule : on accepte l'etat quasi-stabilise).
-    Encoders::rezeroArm();     // theta := 0, compteurs materiels intacts (FOC)
-    paused           = false;
-    pauseTime        = 0.0f;
-    prevStateIdx     = -1;     // pas de transition a cheval sur la pause
-    stepsInEpisode   = 0;
+    const bool settled =
+        fabsf(s.alpha) > (float)PI - QL_SETTLE_RAD &&
+        fabsf(s.alphaDot) < QL_SETTLE_ADOT &&
+        fabsf(s.thetaDot) < QL_SETTLE_TDOT;
+    if (!settled && pauseTime <= QL_SETTLE_MAX_S)
+      return 0.0f;
+
+    Encoders::rezeroArm();
+    paused = false;
+    pauseTime = 0.0f;
+    prevFeatureCount = 0;
+    prevPhi = 0.0f;
+    traceCount = 0;
+    stepsInEpisode = 0.0f;
     st.episodeReward = 0.0f;
-    // NB : s.theta date d'avant le re-zero ; il n'est pas utilise ci-dessous
-    // au premier pas (l'etat RL est [alpha, alphaDot] et la sortie de plage
-    // n'est evaluee qu'a partir du 2e pas).
   }
 
-  const int sIdx = stateIndex(s);
-  // Etat TERMINAL de l'episode (et non coupure du mode) : bras trop loin de
-  // son point de depart, ou bras emballe. Jamais au premier pas (theta vient
-  // d'etre re-zeroe, la valeur recue ici peut etre anterieure au re-zero).
-  const bool outOfRange = stepsInEpisode > 0.0f &&
-      ((QL_THETA_TURNS > 0.0f &&
-        fabsf(s.theta) > QL_THETA_TURNS * (float)TWO_PI) ||
-       (QL_TDOT_MAX > 0.0f && fabsf(s.thetaDot) > QL_TDOT_MAX));
+  uint32_t features[MAX_ACTIVE];
+  const uint8_t featureCount = activeFeatures(s, features);
+  noteFirstUp(s.alpha);
+  float terminalPenalty = 0.0f;
+  const bool terminal = terminalCheck(s, terminalPenalty);
+  const float phi = potential(s);
 
-  // Mise à jour Q(s,a) avec la transition précédente
-  if (!greedyMode && prevStateIdx >= 0) {
-    float r = reward(s, prevAction);
-    if (outOfRange) r += QL_R_OUT_RANGE;
+  // SARSA choisit a' avant la mise a jour de (s,a,r,s').
+  int nextAction = -1;
+  if (QL_SARSA > 0.0f && !terminal)
+    nextAction = selectAction(features, featureCount, s.alpha, s.alphaDot);
+
+  if (!greedyMode && prevFeatureCount > 0) {
+    float r = stateReward(s, prevAction);
+    r += (terminal ? 0.0f : QL_GAMMA * phi) - prevPhi;
+    if (terminal) r += terminalPenalty;
     st.lastStepReward = r;
     st.episodeReward += r;
-    float &q = Q[prevStateIdx + prevAction];
-    // Sur un etat terminal on ne bootstrappe PAS sur l'etat suivant : la
-    // penalite doit rester attachee a l'action qui y a mene.
-    const float target = outOfRange ? r : (r + QL_GAMMA * maxQ(sIdx));
-    q += QL_LR * (target - q);
+
+    float target;
+    if (terminal) {
+      target = r;
+    } else if (QL_SARSA > 0.0f) {
+      target = r + QL_GAMMA *
+          qValue(features, featureCount, nextAction);
+    } else {
+      const int greedy = bestAction(features, featureCount);
+      target = r + QL_GAMMA * qValue(features, featureCount, greedy);
+    }
+    const float oldQ = qValue(prevFeatures, prevFeatureCount, prevAction);
+    updateWeights(prevFeatures, prevFeatureCount, prevAction,
+                  target - oldQ, terminal);
   }
 
-  if (outOfRange) {
+  if (terminal) {
     endEpisode();
-    newEpisode = true;
     beginPause();
     st.uCommand = 0.0f;
+    newEpisode = true;
     return 0.0f;
   }
 
-  // ---- Choix de l'action : epsilon-greedy a exploration PERSISTANTE ----
-  // Une action aleatoire retiree a chaque pas est un bruit blanc a 20 Hz : de
-  // moyenne nulle, il ne peut pas POMPER un oscillateur a ~1,5 Hz, qui demande
-  // ~1/3 de seconde de couple dans le meme sens. L'agent ne rencontrait donc
-  // jamais un debut de swing-up et ne pouvait pas l'apprendre. On TIENT donc
-  // l'action tiree pendant QL_EXPLORE_HOLD pas (~200 ms).
-  int a;
-  if (greedyMode) {
-    a = bestAction(sIdx);
-  } else if (exploreHold > 0) {
-    exploreHold--;
-    a = exploreAct;
-  } else if ((random(10000) / 10000.0f) < st.epsilon) {
-    a = exploreAct = random(QL_N_ACT);
-    exploreHold = QL_EXPLORE_HOLD - 1;
-  } else {
-    a = bestAction(sIdx);
-  }
+  const int action = (nextAction >= 0)
+      ? nextAction
+      : selectAction(features, featureCount, s.alpha, s.alphaDot);
 
-  prevStateIdx = sIdx;
-  prevAction   = a;
-  st.lastAction = (int8_t)(a - ACT_NEUTRAL);
-  st.uCommand   = actionU(a);
+  if (QL_LAMBDA > 0.0f && QL_SARSA <= 0.0f && !greedyMode &&
+      action != bestAction(features, featureCount))
+    traceCount = 0;
 
-  // Gestion de l'épisode
+  memcpy(prevFeatures, features, featureCount * sizeof(uint32_t));
+  prevFeatureCount = featureCount;
+  prevAction = action;
+  prevPhi = phi;
+  st.lastAction = (int8_t)(action - ACT_NEUTRAL);
+  st.uCommand = actionU(action);
+
   stepsInEpisode += 1.0f;
-  if (stepsInEpisode * RL_DT >= QL_EPISODE_S) {
+  if (stepsInEpisode * RL_DT >= episodeLimitS) {
     endEpisode();
+    beginPause();
     newEpisode = true;
-    beginPause();       // moteur coupe, on laisse tout retomber
   }
-  return actionU(a);
+  return st.uCommand;
 }
 
 void QLearning::endEpisode() {
   if (!greedyMode) {
-    st.episode++;
-    if (st.episodeReward > st.bestReward) st.bestReward = st.episodeReward;
-    st.epsilon = max(QL_EPS_MIN, st.epsilon * QL_EPS_DECAY);
+    ++st.episode;
+    if (st.episodeReward > st.bestReward)
+      st.bestReward = st.episodeReward;
+    st.epsilon = fmaxf(QL_EPS_MIN, st.epsilon * QL_EPS_DECAY);
+    st.learningRate =
+        fmaxf(QL_LR_MIN, st.learningRate * QL_LR_DECAY);
   }
   st.episodeReward = 0.0f;
-  stepsInEpisode = 0;
-  prevStateIdx = -1;
-  exploreHold  = 0;
+  stepsInEpisode = 0.0f;
+  episodeLimitS = QL_EPISODE_S;
+  firstUpSeen = false;
+  afterUpArmed = false;
+  upHoldTime = 0.0f;
+  prevFeatureCount = 0;
+  prevPhi = 0.0f;
+  exploreHold = 0;
+  traceCount = 0;
 }
 
 bool QLearning::isPaused() { return paused; }
-
 const QLearning::Stats& QLearning::stats() { return st; }
-float*  QLearning::table()      { return Q; }
-size_t  QLearning::tableCount() { return (size_t)QL_N_ALPHA * QL_N_ADOT * QL_N_ACT; }
+float* QLearning::table() { return weights; }
+size_t QLearning::tableCount() { return WEIGHT_COUNT; }
+
+void QLearning::getPersistState(PersistState &out) {
+  out.episode = st.episode;
+  out.topExploreSteps = st.topExploreSteps;
+  out.epsilon = st.epsilon;
+  out.epsilonTop = st.epsilonTop;
+  out.learningRate = st.learningRate;
+  out.bestReward = st.bestReward;
+}
+
+bool QLearning::restoreTrainingState(const PersistState &in) {
+  if (!isfinite(in.epsilon) || !isfinite(in.epsilonTop) ||
+      !isfinite(in.learningRate) || !isfinite(in.bestReward) ||
+      in.epsilon < 0.0f || in.epsilon > 1.0f ||
+      in.epsilonTop < 0.0f || in.epsilonTop > 1.0f ||
+      in.learningRate < 0.0f || in.learningRate > 1.0f)
+    return false;
+  st.episode = in.episode;
+  st.topExploreSteps = in.topExploreSteps;
+  st.epsilon = in.epsilon;
+  st.epsilonTop = in.epsilonTop;
+  st.learningRate = in.learningRate;
+  st.bestReward = in.bestReward;
+  return true;
+}

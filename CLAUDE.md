@@ -54,7 +54,7 @@ something other than what ships. Machine parameters absent from `config.h` (arm 
 **Control loop split**: a 1 kHz `IntervalTimer` ISR (`controlTick()` in `FurutaPendulum.ino`) owns
 sensor reads, safety checks, and motor output. `loop()` only handles UI polling, screen redraw
 (10 Hz), SD logging (50 Hz), and Q-table autosave — it must never touch hardware the ISR owns.
-Q-learning runs inside the same 1 kHz ISR but is rate-divided to 20 Hz via `RL_DIVIDER`.
+SARSA runs inside the same 1 kHz ISR but is rate-divided to 50 Hz via `RL_DIVIDER`.
 
 **Shared-state discipline**: `sysState` (the state machine enum) and `faultCode` are `volatile`,
 written by the ISR, read by `loop()`. The `PendulumState` working copy (`isrState`) is
@@ -89,7 +89,7 @@ shared with the control loop's state. When touching either ISR, check for priori
   menu, not the layout) + one line in `defaults()`. Each field is a lone aligned `float`,
   so the 1 kHz ISR reads it without a lock; `load()` (bulk struct overwrite) runs under
   `noInterrupts()`. Derived `eTop()`/`pendJ()` are computed from the editable mass/length.
-  Q-learning table dimensions stay compile-time (they size a fixed DMAMEM array).
+  SARSA tile-bank dimensions stay compile-time (they size a fixed DMAMEM array).
 - `encoders.*` — quadrature counts → radians, applying `ARM_SIGN`/`PEND_SIGN` and the gear ratios
   (`ARM_ENC_RATIO`). All angles/rates in the rest of the codebase are already in vertical-axis
   units — never re-apply a gear ratio downstream. `alpha=0` is pendulum-up by convention;
@@ -129,18 +129,18 @@ shared with the control loop's state. When touching either ISR, check for priori
   arm is back home *and* stopped (`TH_I_DEAD_RAD`/`TH_I_DEAD_DOT`) the integral **fades out** over
   `TH_I_FADE_S` rather than being zeroed — a hard cut would step the command by up to `TH_I_MAX`
   and kick the pendulum.
-- `qlearning.*` — Q-table is `DMAMEM` (Teensy's second RAM bank) sized `QL_N_ALPHA * QL_N_ADOT *
-  QL_N_ACT` floats (~56 kB) to keep it off the primary RAM used by the rest of the firmware.
-  State discretization (`binAlpha`/`binAdot`) and the 7 discrete actions (`actionU()`) are
-  config-driven; reward shaping lives in `reward()`. **Actions are normalized torques applied
+- `qlearning.*` — the single SARSA value function uses two directly indexed tile banks:
+  a coarse global 3D bank and a fine local 3D bank near upright. Its 16,656 × 7 float weights
+  occupy 455.4 KiB in `DMAMEM`; 512 sparse replacing eligibility traces occupy 4 KiB in RAM1.
+  The observed state is `[alpha, alphaDot, thetaDot]`; absolute `theta` is intentionally absent.
+  The 7 discrete actions (`actionU()`) are config-driven. **Actions are normalized torques applied
   straight to `Motor::setDuty` — there is deliberately no inner velocity loop.** A velocity setpoint
   made the process non-Markovian: the torque actually applied depended on the PI integrator state
   and on `thetaDot`, neither of which the agent observes. Do not reintroduce one. The action *is*
   first-order smoothed (`QL_U_TAU`, in `controlTick`) before reaching the motor: discrete actions
   can reverse full-scale between steps and applied raw they hammer the gear train audibly. Keep the
   time constant short relative to the action period so the applied torque still settles within one
-  RL step. `RL_DIVIDER` sets 20 Hz — well above the ~1.5 Hz pendulum dynamics, and slow enough that
-  a fixed `QL_GAMMA` spans a useful number of *seconds*.
+  RL step. `RL_DIVIDER` sets 50 Hz so the fast upright capture is sampled.
   **`bestAction()` must break
   ties toward `ACT_NEUTRAL`** (zero torque), not index 0 — index 0 is `-cfg.qlUMax`, so a
   naive `best=0` start makes an untrained (all-zero) table command full reverse speed forever.
@@ -151,13 +151,12 @@ shared with the control loop's state. When touching either ISR, check for priori
   Both bounds are runtime-editable (`Settings`), because the breakaway torque is a property of the
   physical build.
   **Exploration is temporally persistent** (`QL_EXPLORE_HOLD`): a random action is *held* for
-  several RL steps. Re-drawn every step it is white noise at 20 Hz, zero-mean, and therefore
+  several RL steps. Re-drawn every step it is white noise at 50 Hz, zero-mean, and therefore
   physically incapable of pumping a ~1.5 Hz oscillator — the agent never encounters the beginning
   of a swing-up and so cannot learn one. Hold time should be on the order of the pendulum's
   half-period.
-  **The state is `[alpha, alphaDot]` only — `theta` is not observed**, so the policy structurally
-  cannot learn to keep the arm centered. Fixing that means adding a theta dimension to the table
-  (and multiplying its size). Instead, exceeding `QL_THETA_TURNS` or `QL_TDOT_MAX` is a **terminal
+  **Absolute `theta` is not observed**, so the policy does not try to center the slip-ring-equipped
+  arm. Exceeding `QL_THETA_TURNS` (when enabled) or `QL_TDOT_MAX` is a **terminal
   state** (reward `QL_R_OUT_RANGE`, no bootstrap on the successor) that ends the episode and enters
   a **pause** (`isPaused()`): the agent is fully inhibited, the caller cuts the motor (`hardStop`),
   everything settles (`QL_SETTLE_*`), then theta is **software-re-zeroed** via
@@ -186,11 +185,11 @@ shared with the control loop's state. When touching either ISR, check for priori
      arriving slowly is genuinely the goal. `thetaDot` is not in the state, so a proportional
      penalty on it is unattributable — pure bias toward immobility that the agent cannot learn to
      avoid. It is a soft barrier above `QL_TDOT_SOFT` only, where it correlates with recent actions.
-  `step()` does the Q-update
-  for the *previous* transition before selecting the next action (standard online tabular
-  Q-learning), and is a no-op update in greedy mode.
-- `storage.*` — microSD (`BUILTIN_SDCARD`) for binary Q-table snapshots (`/q_current.bin`,
-  `/q_best.bin`, versioned header with table dimensions to reject mismatched loads) and CSV
+  `step()` selects the real successor action then updates the previous transition with
+  SARSA(lambda), including the exploration policy. Greedy mode never updates weights.
+- `storage.*` — microSD (`BUILTIN_SDCARD`) for `SPL1` weight snapshots (`/q_current.bin`,
+  `/q_best.bin`) directly compatible with `sim/tiles.py`. Sidecars (`/q_state.bin`,
+  `/q_best_state.bin`) preserve epsilon/LR progress and are checksum-bound to their weights. CSV
   training logs (`/logs/log_NNNN.csv`). Logging functions are documented as loop()-only, never
   call from the 1 kHz ISR.
 - `ui.*` — GC9A01 SPI display + KY-040 menu encoder. Rendering functions do partial/differential

@@ -298,10 +298,12 @@ class Motor:
         self.applied = 0.0
         self.on = False
 
-    def set_duty(self, u: float) -> None:
+    def set_duty(self, u: float, slew_per_second: float | None = None) -> None:
         lim = self.cfg.DUTY_LIMIT
         u = max(-lim, min(lim, u))
-        max_step = self.cfg.DUTY_SLEW_PER_S * self.cfg.CTRL_DT
+        slew = (self.cfg.DUTY_SLEW_PER_S
+                if slew_per_second is None else slew_per_second)
+        max_step = slew * self.cfg.CTRL_DT
         delta = u - self.applied
         self.applied += max(-max_step, min(max_step, delta))
         self.on = True

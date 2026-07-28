@@ -74,8 +74,12 @@ bool Motor::ready() { return focOk; }
 
 // ---- Appele a 1 kHz depuis l'ISR : aucune E/S, juste la consigne ----
 void Motor::setDuty(float u) {
+  setDuty(u, cfg.dutySlew);
+}
+
+void Motor::setDuty(float u, float slewPerSecond) {
   u = constrain(u, -cfg.dutyLimit, cfg.dutyLimit);
-  const float maxStep = cfg.dutySlew * CTRL_DT;
+  const float maxStep = slewPerSecond * CTRL_DT;
   appliedNorm += constrain(u - appliedNorm, -maxStep, maxStep);
   motorOn = true;
 }

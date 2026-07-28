@@ -229,10 +229,12 @@ class Rig:
                 f"ALPHA_DOT_MAX = {cfg.ALPHA_DOT_MAX:.0f} rad/s coupe en faute "
                 f"AVANT la vitesse de swing-up ({w_swing:.1f} rad/s)."
             )
-        reversal = 2.0 * cfg.QL_U_MAX / cfg.DUTY_SLEW_PER_S
+        ql_slew = float(getattr(
+            cfg, "QL_DUTY_SLEW_PER_S", cfg.DUTY_SLEW_PER_S))
+        reversal = 2.0 * cfg.QL_U_MAX / ql_slew
         if reversal > cfg.RL_DT:
             out.append(
-                f"DUTY_SLEW_PER_S = {cfg.DUTY_SLEW_PER_S:.0f}/s : une inversion "
+                f"QL_DUTY_SLEW_PER_S = {ql_slew:.0f}/s : une inversion "
                 f"pleine échelle prend {1000 * reversal:.0f} ms alors qu'un pas RL "
                 f"dure {1000 * cfg.RL_DT:.0f} ms — le couple demandé n'est jamais "
                 f"atteint."

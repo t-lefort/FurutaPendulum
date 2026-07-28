@@ -19,6 +19,7 @@ namespace Motor {
   // Consigne de COUPLE NORMALISE [-1, 1] (mise a l'echelle par MOTOR_VOLT_LIMIT),
   // avec limite et slew rate. À appeler à 1 kHz depuis l'ISR.
   void setDuty(float u);
+  void setDuty(float u, float slewPerSecond);
 
   // Coupure immédiate (couple nul) — utilisée par la sécurité
   void hardStop();

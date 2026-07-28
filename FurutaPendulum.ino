@@ -3,7 +3,7 @@
 //  Modes : Classic (swing-up + équilibre) et Q-learning embarqué
 //
 //  Boucle de contrôle : 1 kHz (IntervalTimer)
-//  Q-learning         : 20 Hz (dans la boucle de contrôle)
+//  Q-learning         : 50 Hz (dans la boucle de contrôle)
 //  Écran              : 10 Hz  (loop)
 //  Logs SD            : 50 Hz  (loop)
 // ============================================================
@@ -95,7 +95,7 @@ static void controlTick() {
         // arrondit les fronts : les actions sont discrètes et peuvent
         // s'inverser d'un pas à l'autre, ce qui ferait claquer la mécanique.
         rlApplied += (rlUCmd - rlApplied) * (CTRL_DT / QL_U_TAU);
-        Motor::setDuty(rlApplied);
+        Motor::setDuty(rlApplied, QL_DUTY_SLEW_PER_S);
       }
       break;
 
@@ -202,6 +202,34 @@ static void flashMessage(const char *msg) {
   UI::invalidate();
 }
 
+static bool saveAgent(const char *weightsPath, const char *statePath) {
+  QLearning::PersistState progress;
+  QLearning::getPersistState(progress);
+  const uint32_t checksum =
+      Storage::qChecksum(QLearning::table(), QLearning::tableCount());
+  if (!Storage::saveQTable(
+          weightsPath, QLearning::table(), QLearning::tableCount()))
+    return false;
+  return Storage::saveQLState(statePath, progress, checksum);
+}
+
+static bool loadAgent(const char *weightsPath, const char *statePath) {
+  if (!Storage::loadQTable(
+          weightsPath, QLearning::table(), QLearning::tableCount()))
+    return false;
+
+  const uint32_t checksum =
+      Storage::qChecksum(QLearning::table(), QLearning::tableCount());
+  QLearning::PersistState progress;
+  if (!Storage::loadQLState(statePath, progress, checksum) ||
+      !QLearning::restoreTrainingState(progress)) {
+    // Une politique SPL1 issue de la simulation n'a pas de sidecar : elle
+    // repart alors avec le planning epsilon/LR du profil robuste.
+    QLearning::resetTrainingState();
+  }
+  return true;
+}
+
 static void handleMenuSelect() {
   const UI::MenuId m = UI::currentMenu();
   const int i = UI::menuIndex();
@@ -231,17 +259,18 @@ static void handleMenuSelect() {
       case 1: enterState(ST_QL_TRAIN);  break;
       case 2: enterState(ST_QL_GREEDY); break;
       case 3:
-        flashMessage(Storage::saveQTable("/q_current.bin",
-                       QLearning::table(), QLearning::tableCount())
+        flashMessage(saveAgent("/q_current.bin", "/q_state.bin")
                      ? "Q sauvee" : "Erreur SD");
         break;
       case 4:
-        flashMessage(Storage::loadQTable("/q_current.bin",
-                       QLearning::table(), QLearning::tableCount())
+        flashMessage(loadAgent("/q_current.bin", "/q_state.bin")
                      ? "Q chargee" : "Erreur SD");
         break;
       case 5:
-        noInterrupts(); QLearning::resetTable(); interrupts();
+        noInterrupts();
+        QLearning::resetTable();
+        QLearning::resetTrainingState();
+        interrupts();
         flashMessage("Q resetee");
         break;
     }
@@ -338,9 +367,9 @@ void loop() {
     const auto &qs = QLearning::stats();
     if (qs.bestReward > lastBestSaved) {
       lastBestSaved = qs.bestReward;
-      Storage::saveQTable("/q_best.bin", QLearning::table(), QLearning::tableCount());
+      saveAgent("/q_best.bin", "/q_best_state.bin");
     }
-    Storage::saveQTable("/q_current.bin", QLearning::table(), QLearning::tableCount());
+    saveAgent("/q_current.bin", "/q_state.bin");
   }
 
   // ---- Logs (50 Hz) ----
@@ -348,7 +377,8 @@ void loop() {
     lastLog = millis();
     const auto &qs = QLearning::stats();
     Storage::logRow(millis(), (uint8_t)st, qs.episode, lastS, qs.lastAction,
-                    qs.lastStepReward, qs.episodeReward, qs.epsilon);
+                    qs.lastStepReward, qs.episodeReward, qs.epsilon,
+                    qs.epsilonTop, qs.learningRate);
   }
 
   // ---- Écran (10 Hz) ----

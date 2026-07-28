@@ -117,7 +117,9 @@ def audit(cfg, rig: Rig) -> None:
     hold = cfg.QL_EXPLORE_HOLD * cfg.RL_DT
     print(f"  rafale d'exploration    : {1000 * hold:.0f} ms "
           f"({100 * hold / (math.pi / w0):.0f} % d'une demi-période)")
-    rev = 2.0 * cfg.QL_U_MAX / cfg.DUTY_SLEW_PER_S
+    ql_slew = float(getattr(
+        cfg, "QL_DUTY_SLEW_PER_S", cfg.DUTY_SLEW_PER_S))
+    rev = 2.0 * cfg.QL_U_MAX / ql_slew
     print(f"  inversion pleine échelle: {1000 * rev:.0f} ms "
           f"(pas RL = {1000 * cfg.RL_DT:.0f} ms)")
 
@@ -579,7 +581,8 @@ def main(argv=None) -> None:
             "QL_EXPLORE_EPS_TOP",
             "QL_FIRST_UP_RAD", "QL_FIRST_UP_BONUS_S",
             "QL_AFTER_UP_FALL_RAD", "QL_AFTER_UP_ARM_S",
-            "RL_DIVIDER", "QL_K_ENERGY", "QL_K_APPROACH",
+            "RL_DIVIDER", "QL_U_TAU", "QL_DUTY_SLEW_PER_S",
+            "QL_K_ENERGY", "QL_K_APPROACH",
             "QL_K_BAL", "QL_BAL_CONE_TDOT", "QL_K_TDOT_TOP",
             "QL_TDOT_TOP_RAD",
             "TC_SPLIT", "TC_GLOBAL_TILINGS", "TC_GLOBAL_N_ALPHA",
@@ -604,8 +607,10 @@ def main(argv=None) -> None:
     if args.save_q:
         Path(args.save_q).parent.mkdir(parents=True, exist_ok=True)
         runner.agent.save_bin(args.save_q)
-        if (int(getattr(cfg, "TC_TILINGS", 0)) > 0
-                or int(getattr(cfg, "TC_SPLIT", 0)) > 0):
+        if int(getattr(cfg, "TC_SPLIT", 0)) > 0:
+            print(f"Poids SARSA SPL1 -> {args.save_q} "
+                  f"(copier sous /q_current.bin sur la carte SD)")
+        elif int(getattr(cfg, "TC_TILINGS", 0)) > 0:
             # /!\ Format tile coding : PAS celui de storage.cpp. Le copier sur la
             # carte SD serait rejeté (magic différent) — ou pire, mal interprété.
             print(f"Poids tile coding -> {args.save_q}\n"
