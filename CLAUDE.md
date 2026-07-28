@@ -37,6 +37,14 @@ There is no test suite, linter, or CI — this is control-loop firmware validate
 via automated tests. "Testing" means the on-device Debug menu routines (Angles live, Test moteur
 auto, Jog manuel) described in README.md's bring-up procedure.
 
+`sim/` is a Python simulator (stdlib only; `matplotlib` for the 3D view) used to pre-validate
+tuning off the bench — see `sim/README.md`. It **parses `config.h` directly** rather than copying
+constants, so the two can't drift; `sim/agent.py` and `sim/classic.py` are line-for-line ports of
+`qlearning.cpp` / `control_classic.cpp` and must be updated alongside them, or the sim validates
+something other than what ships. Machine parameters absent from `config.h` (arm geometry, motor
+`kt`/`R`, friction) live in the `Rig` dataclass and are unmeasured placeholders. Start with
+`python -m sim.train --check` (static audit, no simulation).
+
 `encoders.h` has a commented-out `#define USE_HW_QUADENCODER` that switches from the interrupt-driven
 `Encoder` library to the Teensy 4.x hardware quadrature decoder (requires installing the
 `Teensy-4.x-Quad-Encoder-Library` by mjs513, not in the library manager under that name).
@@ -74,8 +82,11 @@ shared with the control loop's state. When touching either ISR, check for priori
 - `settings.*` — runtime-editable tuning parameters (`Settings::cfg`, a RAM struct) with an
   on-device editor (`ST_SETTINGS` menu) and EEPROM persistence (magic+version+FNV checksum;
   invalid/absent → defaults from `config.h`). A table-driven `Desc[]` (name/pointer-to-member/
-  min/max/step/decimals) drives both the editor UI and clamping — add a param by adding a struct
-  field + one `TABLE[]` row + one line in `loadDefaults()`. Each field is a lone aligned `float`,
+  min/max/step/decimals) drives both the editor UI and clamping — add a param by **appending** a
+  struct field (never insert or reorder: `load()` treats an older, shorter EEPROM record as a
+  *prefix* of the current struct so existing hand-tuned values survive a firmware update, and that
+  only holds if the existing order is untouched) + one `TABLE[]` row (free order — it drives the
+  menu, not the layout) + one line in `defaults()`. Each field is a lone aligned `float`,
   so the 1 kHz ISR reads it without a lock; `load()` (bulk struct overwrite) runs under
   `noInterrupts()`. Derived `eTop()`/`pendJ()` are computed from the editable mass/length.
   Q-learning table dimensions stay compile-time (they size a fixed DMAMEM array).
@@ -119,8 +130,8 @@ shared with the control loop's state. When touching either ISR, check for priori
   `TH_I_FADE_S` rather than being zeroed — a hard cut would step the command by up to `TH_I_MAX`
   and kick the pendulum.
 - `qlearning.*` — Q-table is `DMAMEM` (Teensy's second RAM bank) sized `QL_N_ALPHA * QL_N_ADOT *
-  QL_N_ACT` floats (~42 kB) to keep it off the primary RAM used by the rest of the firmware.
-  State discretization (`binAlpha`/`binAdot`) and the 7 discrete actions (`ACTION_U`) are
+  QL_N_ACT` floats (~56 kB) to keep it off the primary RAM used by the rest of the firmware.
+  State discretization (`binAlpha`/`binAdot`) and the 7 discrete actions (`actionU()`) are
   config-driven; reward shaping lives in `reward()`. **Actions are normalized torques applied
   straight to `Motor::setDuty` — there is deliberately no inner velocity loop.** A velocity setpoint
   made the process non-Markovian: the torque actually applied depended on the PI integrator state
@@ -131,8 +142,19 @@ shared with the control loop's state. When touching either ISR, check for priori
   RL step. `RL_DIVIDER` sets 20 Hz — well above the ~1.5 Hz pendulum dynamics, and slow enough that
   a fixed `QL_GAMMA` spans a useful number of *seconds*.
   **`bestAction()` must break
-  ties toward `ACT_NEUTRAL`** (zero torque), not index 0 — index 0 is `-QL_U_MAX`, so a
+  ties toward `ACT_NEUTRAL`** (zero torque), not index 0 — index 0 is `-cfg.qlUMax`, so a
   naive `best=0` start makes an untrained (all-zero) table command full reverse speed forever.
+  **The non-zero action levels span `±[cfg.qlUMin, cfg.qlUMax]`, not `±[0, qlUMax]`** (`actionU()`).
+  `qlUMin` is the gear train's breakaway torque, measured with the Jog menu: below it an action
+  produces literally no motion, so a linear spread from 0 turned 2 of the 7 actions into "do
+  nothing, but pay the effort penalty" duplicates of `ACT_NEUTRAL` and burned 29% of exploration.
+  Both bounds are runtime-editable (`Settings`), because the breakaway torque is a property of the
+  physical build.
+  **Exploration is temporally persistent** (`QL_EXPLORE_HOLD`): a random action is *held* for
+  several RL steps. Re-drawn every step it is white noise at 20 Hz, zero-mean, and therefore
+  physically incapable of pumping a ~1.5 Hz oscillator — the agent never encounters the beginning
+  of a swing-up and so cannot learn one. Hold time should be on the order of the pendulum's
+  half-period.
   **The state is `[alpha, alphaDot]` only — `theta` is not observed**, so the policy structurally
   cannot learn to keep the arm centered. Fixing that means adding a theta dimension to the table
   (and multiplying its size). Instead, exceeding `QL_THETA_TURNS` or `QL_TDOT_MAX` is a **terminal
@@ -148,9 +170,23 @@ shared with the control loop's state. When touching either ISR, check for priori
   theta is unobserved and the slip ring allows any arm position. Do not reintroduce it.
   Terminal checks are skipped on an episode's first step (`stepsInEpisode == 0` — the theta sample
   passed in may predate the re-zero).
-  **Reward-shaping invariant**: the "pendulum up" bonuses are gated on low `|thetaDot|`. Without
-  that gate a fast-spinning arm holds the pendulum up centrifugally and collects the bonus forever
-  — a local optimum the agent never leaves. Any change to `reward()` must preserve that gate. `step()` does the Q-update
+  **Reward-shaping invariants** — `reward()` must preserve all three:
+  1. The "pendulum up" bonuses are gated on low `|thetaDot|`. Without that gate a fast-spinning arm
+     holds the pendulum up centrifugally and collects the bonus forever — a local optimum the agent
+     never leaves.
+  2. **The base reward must stay non-negative** (`1 + cos(alpha)`, zero at the bottom). With a
+     negative base, (a) standing still was the cheapest action available — every other term is a
+     penalty and all are zero at rest — which is a perfect local optimum the agent reliably fell
+     into, and (b) `V(bottom) = r/(1-gamma)` dropped below `QL_R_OUT_RANGE`, making the *terminal*
+     state more attractive than surviving, i.e. the penalty rewarded deliberate self-termination.
+  3. **Do not penalize `|alphaDot|` away from the top, and do not penalize `|thetaDot|`
+     proportionally at all.** A swing-up *requires* passing the bottom at
+     `sqrt(4*m*g*lcom/J)` rad/s (~27 with the default model), so a blanket pendulum-speed penalty
+     punishes exactly the energy the agent needs; it is applied only for `|alpha| < 0.8` rad, where
+     arriving slowly is genuinely the goal. `thetaDot` is not in the state, so a proportional
+     penalty on it is unattributable — pure bias toward immobility that the agent cannot learn to
+     avoid. It is a soft barrier above `QL_TDOT_SOFT` only, where it correlates with recent actions.
+  `step()` does the Q-update
   for the *previous* transition before selecting the next action (standard online tabular
   Q-learning), and is a no-op update in greedy mode.
 - `storage.*` — microSD (`BUILTIN_SDCARD`) for binary Q-table snapshots (`/q_current.bin`,

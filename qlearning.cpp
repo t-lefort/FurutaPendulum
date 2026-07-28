@@ -1,7 +1,9 @@
 #include "qlearning.h"
 #include "encoders.h"   // rezeroArm() au debut de chaque episode
+#include "settings.h"   // qlUMin / qlUMax : bornes du jeu d'actions
+using Settings::cfg;
 
-// Table dans la RAM2 (DMAMEM) : 49*31*7 floats = ~42 kB, laisse la RAM1 au code
+// Table dans la RAM2 (DMAMEM) : 49*41*7 floats = ~56 kB, laisse la RAM1 au code
 DMAMEM static float Q[QL_N_ALPHA * QL_N_ADOT * QL_N_ACT];
 
 static QLearning::Stats st;
@@ -13,10 +15,34 @@ static float stepsInEpisode = 0;
 // pour que chaque episode reparte du meme etat (pendule en bas, au repos).
 static bool  paused    = false;
 static float pauseTime = 0.0f;
+// Exploration persistante : pas restants sur l'action aleatoire en cours.
+static int   exploreHold  = 0;
+static int   exploreAct   = 0;
+
+// En cas d'EGALITE (typiquement une table vierge, tout a zero), on doit
+// retomber sur l'action NEUTRE (couple nul) et non sur l'indice 0, qui vaut
+// -u_max : sinon un agent non entraine applique le couple maxi dans un sens en
+// permanence et le bras part en toupie jusqu'a la faute "plage bras".
+static constexpr int ACT_NEUTRAL = QL_N_ACT / 2;   // action de couple nul
+static constexpr int QL_N_LVL    = ACT_NEUTRAL;    // niveaux non nuls par sens
+
 // Actions = couples normalises appliques DIRECTEMENT au moteur.
-static const float ACTION_U[QL_N_ACT] = {
-  -QL_U_MAX, -QL_U_MAX * 0.66f, -QL_U_MAX * 0.33f, 0.0f,
-   QL_U_MAX * 0.33f,  QL_U_MAX * 0.66f,  QL_U_MAX };
+// Les niveaux non nuls sont repartis sur [uMin, uMax] et non sur [0, uMax] :
+// sous le seuil de decollement du train d'engrenages, une action ne produit
+// AUCUN mouvement. Reparties depuis 0, les petites actions etaient des
+// "ne rien faire" facturees au prix du malus |u| -> l'agent n'avait en pratique
+// que 4 actions distinctes sur 7, et l'exploration en gaspillait 29 %.
+// Bornes runtime (menu Reglages : QL_Umin / QL_Umax), le seuil se mesure.
+static inline float actionU(int a) {
+  const int k = a - ACT_NEUTRAL;                  // -QL_N_LVL .. +QL_N_LVL
+  if (k == 0) return 0.0f;
+  const float uMin = cfg.qlUMin;
+  const float uMax = max(cfg.qlUMax, uMin);
+  const float t = (QL_N_LVL > 1) ? (float)(abs(k) - 1) / (float)(QL_N_LVL - 1)
+                                 : 1.0f;          // 0, 0.5, 1 pour 3 niveaux
+  const float u = uMin + t * (uMax - uMin);
+  return (k > 0) ? u : -u;
+}
 
 static inline int binAlpha(float a) {
   // alpha dans [-pi, pi] -> [0, N-1]
@@ -31,11 +57,6 @@ static inline int binAdot(float w) {
 static inline int stateIndex(const PendulumState &s) {
   return (binAlpha(s.alpha) * QL_N_ADOT + binAdot(s.alphaDot)) * QL_N_ACT;
 }
-// En cas d'EGALITE (typiquement une table vierge, tout a zero), on doit
-// retomber sur l'action NEUTRE (couple nul) et non sur l'indice 0, qui vaut
-// -QL_U_MAX : sinon un agent non entraine applique le couple maxi dans un
-// sens en permanence et le bras part en toupie jusqu'a la faute "plage bras".
-static constexpr int ACT_NEUTRAL = QL_N_ACT / 2;   // ACTION_U[3] = couple nul
 
 static inline int bestAction(int sIdx) {
   int best = ACT_NEUTRAL; float bv = Q[sIdx + ACT_NEUTRAL];
@@ -50,18 +71,85 @@ static inline float maxQ(int sIdx) {
 }
 
 static float reward(const PendulumState &s, int action) {
-  float r = 2.0f * cosf(s.alpha)
-          - 0.02f  * fabsf(s.alphaDot)
-          - 0.05f  * fabsf(s.thetaDot)     // etait 0.005 : trop faible pour
-                                           // decourager la rotation continue
-          - 0.02f  * fabsf(ACTION_U[action]) / QL_U_MAX;
-  // Les bonus "pendule en haut" exigent desormais un bras LENT. Sans cette
-  // condition, un bras qui tourne a fond maintient le pendule releve par
-  // effet centrifuge et touche les bonus sans jamais equilibrer : c'est un
-  // optimum local tres attractif dont l'agent ne ressort plus.
-  if (fabsf(s.alpha) < radians(10) && fabsf(s.thetaDot) < 3.0f) r += 5.0f;
-  if (fabsf(s.alpha) < radians(5) && fabsf(s.alphaDot) < 1.0f
-                                  && fabsf(s.thetaDot) < 2.0f) r += 20.0f;
+  // --- Base POSITIVE : 0 en bas, +2 en haut. ---
+  // Elle valait 2*cos(alpha), donc -2 en bas. Deux consequences fatales :
+  //  1) "ne rien faire" etait l'action la MOINS chere de toutes (tous les autres
+  //     termes sont des malus, nuls a l'arret) -> optimum local parfait, l'agent
+  //     se fige en bas. C'est le comportement observe en entrainement.
+  //  2) V(rester en bas) = -2/(1-gamma) = -400, alors que l'etat terminal vaut
+  //     r + QL_R_OUT_RANGE = -52 SANS bootstrap : terminer l'episode etait
+  //     MEILLEUR que survivre. La penalite terminale recompensait le suicide.
+  // Avec r >= 0, l'immobilite vaut 0, toute montee du pendule paie, et la
+  // penalite terminale est enfin une penalite.
+  float r = 1.0f + cosf(s.alpha);
+
+  // --- Vitesse du pendule : penalisee UNIQUEMENT pres du haut ---
+  // Un swing-up exige de passer au point bas a ~sqrt(4*m*g*lcom/J) rad/s
+  // (~27 rad/s ici). Un malus permanent sur |alpha_dot| punissait donc l'agent
+  // exactement au moment ou il fait la bonne chose : c'est l'energie meme dont
+  // il a besoin. Pres du haut au contraire, arriver lentement est ce qu'on veut
+  // (et cela empeche de "farmer" le bonus en traversant la verticale a fond).
+  // /!\ Ce terme est le SEUL qui distingue "arrete en haut" de "traverse le haut
+  // a pleine vitesse". Avec QL_K_ENERGY actif il doit etre du meme ordre, sinon
+  // l'agent maximise l'energie en faisant TOURNER le pendule en continu (mesure
+  // sim : E = eTop est satisfait aussi bien en rotation qu'a l'arret au sommet).
+  if (fabsf(s.alpha) < QL_ADOT_TOP_RAD) r -= QL_K_ADOT_TOP * fabsf(s.alphaDot);
+
+  // Cone de recompense pres du haut (cf. QL_K_BAL dans config.h) : sans lui la
+  // recompense est PLATE dans la zone d'equilibre et rien ne guide le rattrapage.
+  if (QL_K_BAL > 0.0f) {
+    const float ar = s.alpha / QL_BAL_CONE_RAD;
+    const float wr = s.alphaDot / QL_BAL_CONE_ADOT;
+    r += QL_K_BAL * max(0.0f, 1.0f - ar * ar - wr * wr);
+  }
+
+  // --- Vitesse du bras : barriere douce seulement ---
+  // theta_dot n'est PAS dans l'etat ([alpha, alpha_dot]) : un malus permanent
+  // est inattribuable par l'agent, c'est un biais vers l'immobilite qu'il ne
+  // peut pas apprendre a eviter. On ne penalise donc que l'approche de la
+  // limite d'episode, ou le lien action -> penalite est net.
+  const float tdOver = fabsf(s.thetaDot) - QL_TDOT_SOFT;
+  if (tdOver > 0.0f) r -= QL_K_TDOT * tdOver;
+
+  // --- Proximite ENERGETIQUE du sommet (terme DENSE) ---
+  // Sans ce terme l'agent plafonne dans un optimum local tres net, mesure en
+  // simulation : il pompe le pendule jusqu'a ~l'horizontale et s'y maintient.
+  // Raison : 1+cos(alpha) recompense la HAUTEUR, pas l'ENERGIE. Se maintenir a
+  // l'horizontale rapporte ~1,0 par pas indefiniment, alors qu'un vrai swing-up
+  // impose de repasser par le bas (ou 1+cos = 0) pour accumuler de la vitesse.
+  // Les bonus de sommet ne corrigent rien : a 20 Hz le pendule traverse la zone
+  // +/-10 deg en ~9 ms quand il passe balistiquement, donc l'agent ne les
+  // ECHANTILLONNE jamais — mesure : QL_R_BAL de 20 a 600 ne change RIEN, les
+  // trajectoires restent identiques. Une recompense jamais percue n'a pas de
+  // gradient. Il faut donc un terme dense, toujours vu, qui paie l'energie.
+  // E = 1/2*J*alpha_dot^2 + m*g*lcom*cos(alpha), nulle en bas, eTop() en haut.
+  // QL_K_ENERGY = 0 desactive le terme (comportement d'avant).
+  if (QL_K_ENERGY > 0.0f) {
+    const float eTop = max(cfg.eTop(), 1e-6f);
+    const float e = 0.5f * cfg.pendJ() * s.alphaDot * s.alphaDot
+                    + eTop * cosf(s.alpha);
+    // Ecart relatif a l'energie du sommet, borne : reste POSITIF (cf. invariant
+    // "base non negative") et sature au lieu de creuser un puits negatif.
+    const float gap = fabsf(e - eTop) / (2.0f * eTop);
+    r += QL_K_ENERGY * max(0.0f, 1.0f - gap);
+  }
+
+  // Cout de l'effort, faible : il doit departager, pas dominer.
+  const float uMaxNow = max(cfg.qlUMax, 1e-3f);
+  r -= 0.02f * fabsf(actionU(action)) / uMaxNow;
+
+  // Les bonus "pendule en haut" exigent un bras LENT. Sans cette condition, un
+  // bras qui tourne a fond maintient le pendule releve par effet centrifuge et
+  // touche les bonus sans jamais equilibrer : c'est un optimum local tres
+  // attractif dont l'agent ne ressort plus. NE PAS SUPPRIMER CE GATING.
+  // /!\ Mais le seuil doit rester ATTEIGNABLE : a l'instant ou le pendule arrive
+  // en haut, le bras tourne encore (mesure sim sur le swing-up classique :
+  // 6 a 8 rad/s a l'arrivee). Avec un gate a 3 rad/s l'agent ne touchait JAMAIS
+  // le bonus au moment de l'arrivee -> rien ne lui signalait que monter est bien,
+  // et le swing-up ne s'apprenait pas. Regler par QL_UP_TDOT / QL_BAL_TDOT.
+  if (fabsf(s.alpha) < QL_UP_RAD  && fabsf(s.thetaDot) < QL_UP_TDOT)  r += QL_R_UP;
+  if (fabsf(s.alpha) < QL_BAL_RAD && fabsf(s.alphaDot) < QL_BAL_ADOT
+                                  && fabsf(s.thetaDot) < QL_BAL_TDOT) r += QL_R_BAL;
   return r;
 }
 
@@ -83,11 +171,16 @@ void QLearning::startSession(bool greedy) {
   st.episodeReward = 0.0f;
   // On demarre PAR la pause : moteur coupe tant que le pendule n'est pas
   // retombe immobile (l'utilisateur peut lancer le mode pendule en mouvement).
-  paused    = true;
-  pauseTime = 0.0f;
+  paused      = true;
+  pauseTime   = 0.0f;
+  exploreHold = 0;
 }
 
-static inline void beginPause() { paused = true; pauseTime = 0.0f; }
+// L'exploration persistante ne doit jamais enjamber une pause : le couple est
+// coupe pendant celle-ci, tenir l'action n'aurait aucun sens.
+static inline void beginPause() {
+  paused = true; pauseTime = 0.0f; exploreHold = 0;
+}
 
 float QLearning::step(const PendulumState &s, bool &newEpisode) {
   newEpisode = false;
@@ -148,17 +241,29 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
     return 0.0f;
   }
 
-  // Choix de l'action (epsilon-greedy)
+  // ---- Choix de l'action : epsilon-greedy a exploration PERSISTANTE ----
+  // Une action aleatoire retiree a chaque pas est un bruit blanc a 20 Hz : de
+  // moyenne nulle, il ne peut pas POMPER un oscillateur a ~1,5 Hz, qui demande
+  // ~1/3 de seconde de couple dans le meme sens. L'agent ne rencontrait donc
+  // jamais un debut de swing-up et ne pouvait pas l'apprendre. On TIENT donc
+  // l'action tiree pendant QL_EXPLORE_HOLD pas (~200 ms).
   int a;
-  if (!greedyMode && (random(10000) / 10000.0f) < st.epsilon)
-    a = random(QL_N_ACT);
-  else
+  if (greedyMode) {
     a = bestAction(sIdx);
+  } else if (exploreHold > 0) {
+    exploreHold--;
+    a = exploreAct;
+  } else if ((random(10000) / 10000.0f) < st.epsilon) {
+    a = exploreAct = random(QL_N_ACT);
+    exploreHold = QL_EXPLORE_HOLD - 1;
+  } else {
+    a = bestAction(sIdx);
+  }
 
   prevStateIdx = sIdx;
   prevAction   = a;
   st.lastAction = (int8_t)(a - ACT_NEUTRAL);
-  st.uCommand   = ACTION_U[a];
+  st.uCommand   = actionU(a);
 
   // Gestion de l'épisode
   stepsInEpisode += 1.0f;
@@ -167,7 +272,7 @@ float QLearning::step(const PendulumState &s, bool &newEpisode) {
     newEpisode = true;
     beginPause();       // moteur coupe, on laisse tout retomber
   }
-  return ACTION_U[a];
+  return actionU(a);
 }
 
 void QLearning::endEpisode() {
@@ -179,6 +284,7 @@ void QLearning::endEpisode() {
   st.episodeReward = 0.0f;
   stepsInEpisode = 0;
   prevStateIdx = -1;
+  exploreHold  = 0;
 }
 
 bool QLearning::isPaused() { return paused; }

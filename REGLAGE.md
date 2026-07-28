@@ -44,6 +44,11 @@ Rien ne sert de régler des gains si les angles ou les sens sont faux.
    après chaque reboot où le pendule n'était pas en bas au démarrage.
 4. `Sauver EEPROM`.
 
+> **Signes validés au banc** : `PendSign = +1` avec `Ke_swing = -50` donne un
+> swing-up et un équilibre qui fonctionnent. C'est la référence : si une
+> simulation prétend le contraire, c'est sa convention géométrique qui est
+> miroir, pas le firmware (voir `Rig.coupling_sign` dans `sim/README.md`).
+
 ---
 
 ## Phase 2 — Mesurer et saisir les paramètres physiques
@@ -129,9 +134,27 @@ Test : en Balance seul, si le pendule tombe alors que les gains semblent bons et
 que le moteur « répond en retard » → augmente `DutySlew`. Si ça ramène le
 brownout, tu as ton plafond → règle le problème d'alim plutôt que de brider ici.
 
+> **Contrainte supplémentaire venue du Q-learning** : une inversion pleine
+> échelle du couple RL (`2 × QL_Umax`) doit tenir dans **un pas RL (50 ms)**,
+> sinon le couple demandé n'est jamais atteint avant la décision suivante. Il
+> faut donc `DutySlew > 2 × QL_Umax / 0,05`, soit **≥ 22 /s** pour
+> `QL_Umax = 0,55`. Défaut : 40 /s.
+
 ### Boucle de vitesse — supprimée
 Il n'y a plus de PI de vitesse : les actions du Q-learning sont des **couples**
-appliqués directement au moteur (`QL_U_MAX`). Rien à régler ici.
+appliqués directement au moteur.
+
+### `QL_Umin` / `QL_Umax` — jeu d'actions du Q-learning
+Les 7 actions discrètes sont réparties sur `±[QL_Umin, QL_Umax]` (et 0), **pas**
+sur `±[0, QL_Umax]`. Raison : sous le seuil de décollement du train
+d'engrenages, une action ne produit **aucun mouvement** — répartie depuis 0,
+les deux petites actions étaient des « ne rien faire » facturés au prix du malus
+d'effort, l'agent n'avait donc que 4 actions réellement distinctes sur 7.
+
+**`QL_Umin` se mesure**, il ne se devine pas : menu *Debug → Jog manuel*, monte
+la duty de 5 % en 5 % jusqu'à ce que le bras décolle, puis prends **un cran
+au-dessus**. `QL_Umax` : assez haut pour que le pendule monte franchement, sous
+`DutyLim` et sous le seuil de coupure de l'alim PD.
 
 ---
 

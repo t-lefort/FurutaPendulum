@@ -1,0 +1,4 @@
+# Le coeur de la simulation (physique, agent, entrainement, balayage) ne
+# depend QUE de la bibliotheque standard : `python -m sim.train` marche sans
+# rien installer. Ces paquets ne servent qu'a l'affichage.
+matplotlib>=3.7

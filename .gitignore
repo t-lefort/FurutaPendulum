@@ -10,6 +10,12 @@ build/
 q_current.bin
 q_best.bin
 
+# Simulation Python (sim/)
+.venv/
+__pycache__/
+*.pyc
+runs/
+
 # Divers OS / editeurs
 .DS_Store
 Thumbs.db
